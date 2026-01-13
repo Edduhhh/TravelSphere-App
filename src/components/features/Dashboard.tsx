@@ -158,28 +158,23 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     }, [user]);
 
     useEffect(() => {
-        if (!user) return;
-        let isMounted = true;
-        const syncInterval = setInterval(async () => {
-            // Si el componente se desmontó o el usuario está tocando algo, NO HACER NADA
-            if (!isMounted || isPaused.current || isPolling.current) return;
-            isPolling.current = true;
+        if (!user) return; let isMounted = true;
+        const intervalId = setInterval(async () => {
+            // SI EL USUARIO ESTÁ HACIENDO ALGO, NO MOLESTAR (STOP ZOMBIES)
+            if (!isMounted || isPaused.current) return;
             try {
+                // Solo pedimos datos si está todo tranquilo
                 if (view === 'voting_room') await refreshCandidates();
                 if (view === 'calendar_room') await refreshCalendar();
                 if (view === 'dashboard' || isWalletOpen) await refreshWallet();
                 await checkMyRoles();
             } catch (error) {
-                console.error("Error polling", error);
-            } finally {
-                isPolling.current = false;
+                console.error("Error silencioso en polling:", error);
             }
-        }, 2000);
-
-        // LIMPIEZA OBLIGATORIA (MATAR ZOMBIES)
+        }, 3000); // Subimos a 3 segundos para dar aire
         return () => {
             isMounted = false;
-            clearInterval(syncInterval);
+            clearInterval(intervalId); // MATAR EL PROCESO AL SALIR
         };
     }, [user, view, isWalletOpen]);
 
@@ -257,20 +252,34 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     };
 
     const handlePropose = async () => {
-        if (!newProposal) return;
+        if (!newProposal.trim()) return;
+        // 1. PAUSA EL REFRESCO AUTOMÁTICO (ESCUDO ACTIVADO)
         isPaused.current = true;
-        const tempProposal = { id: Date.now(), ciudad: newProposal, puntos: 0, propuesto_por: user.nombre, datos: { resumen_ia: "Analizando..." } };
-        setCandidaturas(prev => [...prev, tempProposal]);
-        setMyRanking(prev => [...prev, tempProposal]);
-        setNewProposal(''); setModalAction(null);
         try {
-            await fetch('http://localhost:3001/api/voting/proponer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, ciudad: newProposal }) });
-            refreshCandidates();
+            // 2. AÑADE VISUALMENTE YA (Para que no parezca lento)
+            const tempId = Date.now();
+            const tempCity = { id: tempId, ciudad: newProposal, votos: 0, esTemp: true, propuesto_por: user.nombre };
+            // Usamos callback para asegurar que no perdemos datos previos
+            setCandidaturas(prev => [...prev, tempCity]);
+            setMyRanking(prev => [...prev, tempCity]);
+            setNewProposal(''); // Limpiar input
+            setModalAction(null); // Cerrar modal
+            // 3. ENVIAR AL SERVIDOR
+            await fetch('http://localhost:3001/api/voting/proponer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, ciudad: tempCity.ciudad })
+            });
+            // 4. ESPERAR UN POCO ANTES DE VOLVER A ESCUCHAR AL SERVIDOR
+            // Esto da tiempo a que la base de datos guarde el dato
+            setTimeout(() => {
+                refreshCandidates(); // Forzamos una actualización manual
+                isPaused.current = false; // BAJAMOS EL ESCUDO
+            }, 1000);
         } catch (e) {
-            showAlert("Error al proponer destino");
-            refreshCandidates();
-        } finally {
-            setTimeout(() => { isPaused.current = false; }, 1000);
+            console.error(e);
+            showAlert("Error al proponer");
+            isPaused.current = false;
         }
     };
 
