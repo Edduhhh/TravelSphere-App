@@ -119,6 +119,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const [rangeEnd, setRangeEnd] = useState<string | null>(null);
     const [suggestedInterval, setSuggestedInterval] = useState<{ inicio: string, fin: string } | null>(null);
     const isPolling = useRef(false);
+    const isPaused = useRef(false);
 
     // Dashboard & Wallet
     const [searchQuery, setSearchQuery] = useState("Tapas");
@@ -158,21 +159,28 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     useEffect(() => {
         if (!user) return;
+        let isMounted = true;
         const syncInterval = setInterval(async () => {
-            if (isPolling.current) return;
+            // Si el componente se desmontó o el usuario está tocando algo, NO HACER NADA
+            if (!isMounted || isPaused.current || isPolling.current) return;
             isPolling.current = true;
             try {
                 if (view === 'voting_room') await refreshCandidates();
                 if (view === 'calendar_room') await refreshCalendar();
                 if (view === 'dashboard' || isWalletOpen) await refreshWallet();
                 await checkMyRoles();
-            } catch (e) {
-                console.error("Sync error", e);
+            } catch (error) {
+                console.error("Error polling", error);
             } finally {
                 isPolling.current = false;
             }
         }, 2000);
-        return () => clearInterval(syncInterval);
+
+        // LIMPIEZA OBLIGATORIA (MATAR ZOMBIES)
+        return () => {
+            isMounted = false;
+            clearInterval(syncInterval);
+        };
     }, [user, view, isWalletOpen]);
 
     // --- FUNCIONES AUXILIARES ---
@@ -250,6 +258,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     const handlePropose = async () => {
         if (!newProposal) return;
+        isPaused.current = true;
         const tempProposal = { id: Date.now(), ciudad: newProposal, puntos: 0, propuesto_por: user.nombre, datos: { resumen_ia: "Analizando..." } };
         setCandidaturas(prev => [...prev, tempProposal]);
         setMyRanking(prev => [...prev, tempProposal]);
@@ -260,12 +269,15 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         } catch (e) {
             showAlert("Error al proponer destino");
             refreshCandidates();
+        } finally {
+            setTimeout(() => { isPaused.current = false; }, 1000);
         }
     };
 
     const handleDelete = async (id: number) => {
         // 1. Usar la alerta bonita, no window.confirm
         showConfirm("¿Seguro que quieres borrar esta propuesta?", async () => {
+            isPaused.current = true;
             try {
                 // 2. ACTUALIZACIÓN OPTIMISTA (Borrar de la pantalla INMEDIATAMENTE)
                 // Esto hace que el usuario vea que se borra al instante, sin esperar al servidor
@@ -293,6 +305,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                 showAlert("Error de conexión");
             } finally {
                 setAlertConfig(null); // Cerrar la alerta siempre
+                setTimeout(() => { isPaused.current = false; }, 1000);
             }
         });
     };
