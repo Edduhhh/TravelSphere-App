@@ -118,7 +118,6 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const [rangeStart, setRangeStart] = useState<string | null>(null);
     const [rangeEnd, setRangeEnd] = useState<string | null>(null);
     const [suggestedInterval, setSuggestedInterval] = useState<{ inicio: string, fin: string } | null>(null);
-    const isPolling = useRef(false);
     const isPaused = useRef(false);
 
     // Dashboard & Wallet
@@ -158,25 +157,25 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     }, [user]);
 
     useEffect(() => {
-        if (!user) return; let isMounted = true;
+        if (!user) return;
+        let isMounted = true;
         const intervalId = setInterval(async () => {
-            // SI EL USUARIO ESTÁ HACIENDO ALGO, NO MOLESTAR (STOP ZOMBIES)
+            // ESCUDO: Si el componente no está montado O el usuario está tocando algo (isPaused), NO actualizar.
             if (!isMounted || isPaused.current) return;
             try {
-                // Solo pedimos datos si está todo tranquilo
-                if (view === 'voting_room') await refreshCandidates();
-                if (view === 'calendar_room') await refreshCalendar();
-                if (view === 'dashboard' || isWalletOpen) await refreshWallet();
+                await refreshCandidates();
+                await refreshCalendar();
+                await refreshWallet();
                 await checkMyRoles();
             } catch (error) {
-                console.error("Error silencioso en polling:", error);
+                console.error("Polling silencioso error:", error);
             }
-        }, 3000); // Subimos a 3 segundos para dar aire
+        }, 3000); // 3 segundos para reducir carga
         return () => {
             isMounted = false;
-            clearInterval(intervalId); // MATAR EL PROCESO AL SALIR
+            clearInterval(intervalId); // MATAR ZOMBIES
         };
-    }, [user, view, isWalletOpen]);
+    }, [user, view]);
 
     // --- FUNCIONES AUXILIARES ---
     const showAlert = (message: string) => setAlertConfig({ type: 'alert', message, onConfirm: () => setAlertConfig(null) });
@@ -253,29 +252,26 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     const handlePropose = async () => {
         if (!newProposal.trim()) return;
-        // 1. PAUSA EL REFRESCO AUTOMÁTICO (ESCUDO ACTIVADO)
+        // 1. LEVANTAR ESCUDO (Pausar actualizaciones del servidor)
         isPaused.current = true;
         try {
-            // 2. AÑADE VISUALMENTE YA (Para que no parezca lento)
+            // 2. UI OPTIMISTA (Feedback inmediato)
             const tempId = Date.now();
-            const tempCity = { id: tempId, ciudad: newProposal, votos: 0, esTemp: true, propuesto_por: user.nombre };
-            // Usamos callback para asegurar que no perdemos datos previos
-            setCandidaturas(prev => [...prev, tempCity]);
-            setMyRanking(prev => [...prev, tempCity]);
-            setNewProposal(''); // Limpiar input
-            setModalAction(null); // Cerrar modal
-            // 3. ENVIAR AL SERVIDOR
+            // Añadir inmediatamente a la lista local
+            setCandidaturas(prev => [...prev, { id: tempId, ciudad: newProposal, votos: 0, esTemp: true }]);
+            setNewProposal('');
+            setModalAction(null);
+            // 3. ENVIAR AL BACKEND
             await fetch('http://localhost:3001/api/voting/proponer', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, ciudad: tempCity.ciudad })
+                body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, ciudad: newProposal })
             });
-            // 4. ESPERAR UN POCO ANTES DE VOLVER A ESCUCHAR AL SERVIDOR
-            // Esto da tiempo a que la base de datos guarde el dato
+            // 4. MANTENER ESCUDO UN POCO MÁS (Para dar tiempo a la DB)
             setTimeout(() => {
-                refreshCandidates(); // Forzamos una actualización manual
-                isPaused.current = false; // BAJAMOS EL ESCUDO
-            }, 1000);
+                refreshCandidates();
+                isPaused.current = false; // BAJAR ESCUDO
+            }, 1500);
         } catch (e) {
             console.error(e);
             showAlert("Error al proponer");
@@ -283,28 +279,28 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         }
     };
 
-    const handleDelete = (id: number) => {
-        // 1. PAUSA EL REFRESCO
+    const handleDelete = (id: any) => {
+        // 1. LEVANTAR ESCUDO
         isPaused.current = true;
-        showConfirm("¿Borrar definitivamente?", async () => {
+        showConfirm("¿Borrar esta propuesta?", async () => {
             try {
-                // 2. BORRADO VISUAL INMEDIATO
+                // 2. UI OPTIMISTA (Borrar visualmente YA)
                 setCandidaturas(prev => prev.filter(c => c.id !== id));
                 setMyRanking(prev => prev.filter(c => c.id !== id));
-                // 3. PETICIÓN AL SERVIDOR
+                // 3. ENVIAR AL BACKEND
                 await fetch('http://localhost:3001/api/voting/borrar', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ candidaturaId: id }) // Asegura que el backend espera 'candidaturaId'
+                    body: JSON.stringify({ candidaturaId: id })
                 });
                 setAlertConfig(null);
-                // 4. ESPERAR Y REACTIVAR REFRESCO
+                // 4. ESPERAR Y REACTIVAR
                 setTimeout(() => {
                     refreshCandidates();
                     isPaused.current = false;
-                }, 1000);
+                }, 1500);
             } catch (e) {
-                showAlert("Error al borrar");
+                console.error(e);
                 isPaused.current = false;
             }
         });
