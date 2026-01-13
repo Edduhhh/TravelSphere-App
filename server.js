@@ -163,17 +163,18 @@ app.post('/api/voting/enviar-ranking', (req, res) => {
     } catch (e) { res.status(500).json({ error: "Error" }); }
 });
 app.post('/api/voting/borrar', (req, res) => {
-    const id = req.body.id || req.body.candidaturaId;
-    if (!id) return res.json({ success: false, message: "ID no proporcionado" });
-    try {
-        db.transaction(() => {
-            db.prepare('DELETE FROM votos_detalle WHERE candidatura_id = ?').run(id);
-            db.prepare('DELETE FROM candidaturas WHERE id = ?').run(id);
-        })();
-        res.json({ success: true });
-    } catch (e) {
-        res.json({ success: false });
-    }
+    // OJO: Aceptamos 'id' O 'candidaturaId' para evitar fallos
+    const idParaBorrar = req.body.id || req.body.candidaturaId;
+    console.log("Intentando borrar ID:", idParaBorrar); // Debug en consola server
+    if (!idParaBorrar) return res.json({ success: false, message: "Falta ID" });
+    db.run("DELETE FROM candidaturas WHERE id = ?", [idParaBorrar], function (err) {
+        if (err) {
+            console.error("Error SQL al borrar:", err);
+            return res.json({ success: false, message: err.message });
+        }
+        // Importante: this.changes dice cuántas filas se borraron
+        res.json({ success: true, changes: this.changes });
+    });
 });
 app.post('/api/voting/cerrar', (req, res) => {
     const { viajeId } = req.body;

@@ -297,7 +297,8 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                 await fetch('http://localhost:3001/api/voting/borrar', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ candidaturaId: id })
+                    // ENVIAMOS 'id' CLARAMENTE
+                    body: JSON.stringify({ id: id })
                 });
                 setAlertConfig(null);
                 // 4. ESPERAR Y REACTIVAR
