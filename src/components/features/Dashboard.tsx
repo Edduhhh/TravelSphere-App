@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Wallet, Search, X, Plus, User, LogIn, Target, MapPin, ArrowRight, Compass, Users, Vote, Heart, Plane, Clock, Sun, Calendar, ChevronLeft, ChevronRight, Check, Trophy, ListOrdered, Star, AlertTriangle, Gavel, DollarSign, Hotel, Thermometer, Info, GripVertical, Map, BarChart3, PieChart, PlaneLanding, PlaneTakeoff, Settings, Timer, Loader2 } from 'lucide-react';
+import { Wallet, Search, X, Plus, User, LogIn, LogOut, Target, MapPin, ArrowRight, Compass, Users, Vote, Heart, Plane, Clock, Sun, Calendar, ChevronLeft, ChevronRight, Check, Trophy, ListOrdered, Star, AlertTriangle, Gavel, DollarSign, Hotel, Thermometer, Info, GripVertical, Map, BarChart3, PieChart, PlaneLanding, PlaneTakeoff, Settings, Timer, Loader2 } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -353,6 +353,16 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     const refreshWallet = async () => { if (!user) return; try { const resBote = await fetch(`http://localhost:3001/api/wallet/estado?viajeId=${user.viajeId}`); const dataBote = await resBote.json(); setWalletData(dataBote); const resGastos = await fetch(`http://localhost:3001/api/wallet/mis-gastos?usuarioId=${user.id}`); const dataGastos = await resGastos.json(); setMisGastos(dataGastos.gastos || []); const yo = dataBote.usuarios.find((u: any) => u.id === user.id); if (yo) setUser((prev: any) => ({ ...prev, esTesorero: yo.es_tesorero })); } catch (error) { console.error("Error wallet"); } };
 
+    const handleLogOut = () => {
+        showConfirm("¿Quieres salir de este viaje? Perderás el acceso directo hasta que vuelvas a introducir el código.", () => {
+            localStorage.removeItem('travelSphereUser');
+            setUser(null);
+            setView('lobby');
+            setLobbyMode('start');
+            setAlertConfig(null);
+        });
+    };
+
     useEffect(() => { if ((view === 'dashboard' || view === 'calendar_room') && isWalletOpen) refreshWallet(); }, [isWalletOpen, view]);
 
     const ejecutarAccion = async () => { if (!inputValue) return; const monto = Number(inputValue); const headers = { 'Content-Type': 'application/json' }; if (modalAction.type === 'crearRonda') await fetch('http://localhost:3001/api/wallet/nueva-ronda', { method: 'POST', headers, body: JSON.stringify({ viajeId: user.viajeId, monto }) }); else if (modalAction.type === 'pagar') await fetch('http://localhost:3001/api/wallet/pagar', { method: 'POST', headers, body: JSON.stringify({ usuarioId: modalAction.data.id, cantidad: monto }) }); else if (modalAction.type === 'adelantar') await fetch('http://localhost:3001/api/wallet/adelantar', { method: 'POST', headers, body: JSON.stringify({ usuarioId: user.id, monto, concepto: inputValue2 || 'Varios' }) }); else if (modalAction.type === 'gastoPersonal') await fetch('http://localhost:3001/api/wallet/nuevo-gasto-personal', { method: 'POST', headers, body: JSON.stringify({ usuarioId: user.id, monto, concepto: inputValue2 || 'Capricho' }) }); else if (modalAction.type === 'cambiarTesorero') { await fetch('http://localhost:3001/api/wallet/cambiar-tesorero', { method: 'POST', headers, body: JSON.stringify({ viajeId: user.viajeId, nuevoTesoreroId: monto }) }); showAlert("Cargo cedido."); } setModalAction(null); setInputValue(''); setInputValue2(''); refreshWallet(); };
@@ -532,6 +542,9 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                         <div><h1 className="text-2xl serif-font text-[#1C1917]">{user?.destino?.replace('PENDIENTE: ', '') || currentCity}</h1><p className="text-[10px] font-bold text-[#78716C] tracking-widest uppercase mt-0.5">Código: <span className="text-[#D08C60]">{user?.viajeCodigo}</span></p></div>
                     </div>
                     <div className="flex gap-2">
+                        <button onClick={handleLogOut} className="w-10 h-10 bg-red-50 text-red-600 border border-red-100 rounded-full flex items-center justify-center shadow-sm hover:bg-red-100 transition-all group" title="Salir del viaje">
+                            <LogOut size={18} className="group-hover:scale-110 transition-transform" />
+                        </button>
                         {user?.esAdmin ? (<button onClick={openRolesModal} className="w-10 h-10 bg-[#1B4332] text-white rounded-full flex items-center justify-center shadow-md hover:bg-[#2D6A4F] transition-colors"><Settings size={18} /></button>) : null}
                         <div onClick={onParticipantsClick} className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full shadow-sm border border-[#E7E5E4] cursor-pointer"><div className="w-6 h-6 rounded-full bg-[#1B4332] text-white flex items-center justify-center text-xs font-serif">{user?.nombre.charAt(0)}</div><span className="text-xs font-medium text-[#78716C]">{user?.esAdmin ? 'Admin' : 'Guest'}</span></div>
                     </div>
