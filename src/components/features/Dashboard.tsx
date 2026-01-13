@@ -713,6 +713,14 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                 </div>
             </Modal>
 
+            <Modal isOpen={modalAction?.type === 'proponer'} title="Nueva Propuesta" onClose={() => setModalAction(null)}>
+                <div className="space-y-4">
+                    <label className="text-[10px] font-bold text-[#78716C] uppercase tracking-widest">Nombre del Destino</label>
+                    <input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Tokio" value={newProposal} onChange={e => setNewProposal(e.target.value)} />
+                    <button onClick={handlePropose} className="w-full py-4 btn-primary text-lg flex items-center justify-center gap-2 mt-4"><Plus size={20} /> Proponer Destino</button>
+                </div>
+            </Modal>
+
             <CustomAlert {...alertConfig} />
         </div>
     );
