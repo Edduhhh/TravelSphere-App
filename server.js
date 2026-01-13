@@ -162,16 +162,16 @@ app.post('/api/voting/enviar-ranking', (req, res) => {
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: "Error" }); }
 });
-app.post('/api/voting/eliminar', (req, res) => {
-    const { candidaturaId, viajeId } = req.body;
+app.post('/api/voting/borrar', (req, res) => {
+    const { id } = req.body;
     try {
         db.transaction(() => {
-            db.prepare('DELETE FROM votos_detalle WHERE candidatura_id = ?').run(candidaturaId);
-            db.prepare('DELETE FROM candidaturas WHERE id = ? AND viaje_id = ?').run(candidaturaId, viajeId);
+            db.prepare('DELETE FROM votos_detalle WHERE candidatura_id = ?').run(id);
+            db.prepare('DELETE FROM candidaturas WHERE id = ?').run(id);
         })();
         res.json({ success: true });
     } catch (e) {
-        res.status(500).json({ error: "Error al eliminar" });
+        res.json({ success: false });
     }
 });
 app.post('/api/voting/cerrar', (req, res) => {
