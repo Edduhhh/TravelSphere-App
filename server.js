@@ -163,17 +163,18 @@ app.post('/api/voting/enviar-ranking', (req, res) => {
     } catch (e) { res.status(500).json({ error: "Error" }); }
 });
 app.post('/api/voting/borrar', (req, res) => {
-    // OJO: Aceptamos 'id' O 'candidaturaId' para evitar fallos
-    const idParaBorrar = req.body.id || req.body.candidaturaId;
-    console.log("Intentando borrar ID:", idParaBorrar); // Debug en consola server
-    if (!idParaBorrar) return res.json({ success: false, message: "Falta ID" });
-    db.run("DELETE FROM candidaturas WHERE id = ?", [idParaBorrar], function (err) {
-        if (err) {
-            console.error("Error SQL al borrar:", err);
-            return res.json({ success: false, message: err.message });
-        }
-        // Importante: this.changes dice cuántas filas se borraron
-        res.json({ success: true, changes: this.changes });
+    console.log("--> PETICIÓN DE BORRADO RECIBIDA");
+    console.log("--> BODY COMPLETO:", req.body); // ¿Esto sale vacío en la consola?
+    const { id, candidaturaId } = req.body;
+    const finalId = id || candidaturaId;
+    if (!finalId) {
+        console.error("!!! ERROR: ID INDEFINIDO. El servidor no lee el JSON.");
+        return res.status(400).json({ success: false, message: "ID no recibido" });
+    }
+    db.run("DELETE FROM candidaturas WHERE id = ?", [finalId], function (err) {
+        if (err) return res.status(500).json({ success: false, message: err.message });
+        console.log(`--> ÉXITO: Se borraron ${this.changes} filas.`);
+        res.json({ success: true });
     });
 });
 app.post('/api/voting/cerrar', (req, res) => {
