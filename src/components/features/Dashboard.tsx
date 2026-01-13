@@ -263,22 +263,36 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         }
     };
 
-    const handleDelete = (id: number) => {
-        showConfirm("¿Borrar esta propuesta?", async () => {
-            // Optimistic Update
-            setCandidaturas(prev => prev.filter(c => c.id !== id));
-            setMyRanking(prev => prev.filter(c => c.id !== id));
-            setAlertConfig(null);
-
+    const handleDelete = async (id: number) => {
+        // 1. Usar la alerta bonita, no window.confirm
+        showConfirm("¿Seguro que quieres borrar esta propuesta?", async () => {
             try {
-                await fetch('http://localhost:3001/api/voting/borrar', {
+                // 2. ACTUALIZACIÓN OPTIMISTA (Borrar de la pantalla INMEDIATAMENTE)
+                // Esto hace que el usuario vea que se borra al instante, sin esperar al servidor
+                const backup = [...candidaturas];
+                setCandidaturas(prev => prev.filter(c => c.id !== id));
+                setMyRanking(prev => prev.filter(c => c.id !== id));
+
+                // 3. Petición al servidor en segundo plano
+                const res = await fetch('http://localhost:3001/api/voting/borrar', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id })
+                    body: JSON.stringify({ viajeId: user.viajeId, candidaturaId: id })
                 });
-                refreshCandidates();
+                const data = await res.json();
+                // 4. Si falla el servidor, restauramos la copia (Rollback)
+                if (!data.success) {
+                    setCandidaturas(backup);
+                    showAlert("Error al borrar: " + (data.message || "Inténtalo de nuevo"));
+                } else {
+                    // Si va bien, forzamos refresco para asegurar
+                    refreshCandidates();
+                }
             } catch (e) {
-                showAlert("Error al borrar");
+                console.error(e);
+                showAlert("Error de conexión");
+            } finally {
+                setAlertConfig(null); // Cerrar la alerta siempre
             }
         });
     };

@@ -163,7 +163,8 @@ app.post('/api/voting/enviar-ranking', (req, res) => {
     } catch (e) { res.status(500).json({ error: "Error" }); }
 });
 app.post('/api/voting/borrar', (req, res) => {
-    const { id } = req.body;
+    const id = req.body.id || req.body.candidaturaId;
+    if (!id) return res.json({ success: false, message: "ID no proporcionado" });
     try {
         db.transaction(() => {
             db.prepare('DELETE FROM votos_detalle WHERE candidatura_id = ?').run(id);
