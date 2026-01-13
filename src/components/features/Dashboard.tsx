@@ -117,6 +117,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const [tripDuration, setTripDuration] = useState(4);
     const [rangeStart, setRangeStart] = useState<string | null>(null);
     const [rangeEnd, setRangeEnd] = useState<string | null>(null);
+    const [suggestedInterval, setSuggestedInterval] = useState<{ inicio: string, fin: string } | null>(null);
 
     // Dashboard & Wallet
     const [searchQuery, setSearchQuery] = useState("Tapas");
@@ -293,7 +294,39 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         }
     };
 
-    const refreshCalendar = async () => { if (!user) return; const res = await fetch(`http://localhost:3001/api/calendar/heat?viajeId=${user.viajeId}`); const data = await res.json(); setHeatmap(data.mapaCalor || {}); setTotalUsers(data.totalUsuarios || 1); setFechasOficiales(data.fechasOficiales); };
+    const refreshCalendar = async () => {
+        if (!user) return;
+        const res = await fetch(`http://localhost:3001/api/calendar/heat?viajeId=${user.viajeId}`);
+        const data = await res.json();
+        setHeatmap(data.mapaCalor || {});
+        setTotalUsers(data.totalUsuarios || 1);
+        setFechasOficiales(data.fechasOficiales);
+    };
+
+    useEffect(() => {
+        if (view === 'calendar_room' && selectionMode && tripDuration > 0) {
+            const fetchBestInterval = async () => {
+                try {
+                    const res = await fetch('http://localhost:3001/api/calendar/best-interval', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ viajeId: user.viajeId, duracion: tripDuration })
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        setSuggestedInterval({ inicio: data.inicio, fin: data.fin });
+                    } else {
+                        setSuggestedInterval(null);
+                    }
+                } catch (e) {
+                    console.error("Error fetching best interval");
+                }
+            };
+            fetchBestInterval();
+        } else {
+            setSuggestedInterval(null);
+        }
+    }, [view, selectionMode, tripDuration, heatmap]);
 
     const handleDateClick = async (day: number) => {
         const year = currentMonth.getFullYear(); const month = String(currentMonth.getMonth() + 1).padStart(2, '0'); const dayStr = String(day).padStart(2, '0'); const fecha = `${year}-${month}-${dayStr}`;
@@ -428,9 +461,20 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                 </div>
 
                 {selectionMode && (
-                    <div className="bg-[#FFF7ED] p-4 rounded-xl mb-6 border border-[#FFEDD5] flex items-center justify-between">
-                        <div><p className="text-xs font-bold text-[#9A3412] uppercase">Duración del Viaje</p><p className="text-xs text-[#C2410C]">Se seleccionarán {tripDuration} días automáticamente.</p></div>
-                        <div className="flex items-center gap-2"><button onClick={() => setTripDuration(Math.max(1, tripDuration - 1))} className="w-8 h-8 bg-white rounded-lg border border-[#E7E5E4] flex items-center justify-center">-</button><span className="font-bold text-lg w-8 text-center">{tripDuration}</span><button onClick={() => setTripDuration(tripDuration + 1)} className="w-8 h-8 bg-white rounded-lg border border-[#E7E5E4] flex items-center justify-center">+</button></div>
+                    <div className="bg-[#FFF7ED] p-4 rounded-xl mb-6 border border-[#FFEDD5] flex flex-col gap-4">
+                        <div className="flex items-center justify-between">
+                            <div><p className="text-xs font-bold text-[#9A3412] uppercase">Duración del Viaje</p><p className="text-xs text-[#C2410C]">Se seleccionarán {tripDuration} días automáticamente.</p></div>
+                            <div className="flex items-center gap-2"><button onClick={() => setTripDuration(Math.max(1, tripDuration - 1))} className="w-8 h-8 bg-white rounded-lg border border-[#E7E5E4] flex items-center justify-center">-</button><span className="font-bold text-lg w-8 text-center">{tripDuration}</span><button onClick={() => setTripDuration(tripDuration + 1)} className="w-8 h-8 bg-white rounded-lg border border-[#E7E5E4] flex items-center justify-center">+</button></div>
+                        </div>
+                        {suggestedInterval && (
+                            <div className="bg-white/50 p-3 rounded-lg border border-[#1B4332]/5 flex items-center justify-between animate-pulse">
+                                <div className="flex items-center gap-2 text-[#1B4332]">
+                                    <Timer size={16} />
+                                    <p className="text-xs font-medium">Recomendación IA: <strong>{suggestedInterval.inicio}</strong></p>
+                                </div>
+                                <button onClick={() => { setRangeStart(suggestedInterval.inicio); setRangeEnd(suggestedInterval.fin); }} className="text-[10px] font-bold text-[#1B4332] underline uppercase">Aplicar</button>
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -456,9 +500,14 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                             const isRangeEnd = fecha === rangeEnd;
                             const isInRange = rangeStart && rangeEnd && fecha > rangeStart && fecha < rangeEnd;
 
+                            const isSuggestedStart = suggestedInterval && fecha === suggestedInterval.inicio;
+                            const isSuggestedEnd = suggestedInterval && fecha === suggestedInterval.fin;
+                            const isSuggestedRange = suggestedInterval && fecha > suggestedInterval.inicio && fecha < suggestedInterval.fin;
+
                             if (selectionMode) {
                                 if (isRangeStart || isRangeEnd) { bg = '#D08C60'; color = 'white'; }
                                 else if (isInRange) { bg = '#FFEDD5'; }
+                                else if (isSuggestedStart || isSuggestedEnd || isSuggestedRange) { bg = '#E8F5E9'; color = '#1B4332'; }
                             }
 
                             return (<button key={day} onClick={() => handleDateClick(day)} className={`h-14 rounded-xl flex flex-col items-center justify-center transition-all relative border ${selectionMode && (isRangeStart || isRangeEnd) ? 'scale-110 shadow-lg z-10' : 'border-transparent'}`} style={{ backgroundColor: bg, color: color }}> <span className="text-sm font-bold">{day}</span> {!selectionMode && data.count === totalUsers && totalUsers > 1 && (<div className="absolute -top-1 -right-1 bg-yellow-400 text-white rounded-full p-0.5 shadow-sm"><Check size={10} strokeWidth={4} /></div>)} </button>);

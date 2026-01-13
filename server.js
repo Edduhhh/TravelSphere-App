@@ -33,7 +33,19 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS aportaciones (id INTEGER PRIMARY KEY, ronda_id INTEGER, usuario_id INTEGER, monto_solicitado REAL, monto_pagado REAL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS adelantos (id INTEGER PRIMARY KEY, usuario_id INTEGER, concepto TEXT, monto REAL);
   CREATE TABLE IF NOT EXISTS gastos_personales (id INTEGER PRIMARY KEY, usuario_id INTEGER, concepto TEXT, monto REAL);
-  CREATE TABLE IF NOT EXISTS candidaturas (id INTEGER PRIMARY KEY, viaje_id INTEGER, usuario_id INTEGER, ciudad TEXT, puntos INTEGER DEFAULT 0, datos_viabilidad TEXT, foto_url TEXT, FOREIGN KEY(viaje_id) REFERENCES viajes(id));
+  CREATE TABLE IF NOT EXISTS candidaturas (
+    id INTEGER PRIMARY KEY, 
+    viaje_id INTEGER, 
+    usuario_id INTEGER, 
+    ciudad TEXT, 
+    puntos INTEGER DEFAULT 0, 
+    votos_pos1 INTEGER DEFAULT 0, -- NEW: Tie-breaking pos 1
+    votos_pos2 INTEGER DEFAULT 0, -- NEW: Tie-breaking pos 2
+    votos_pos3 INTEGER DEFAULT 0, -- NEW: Tie-breaking pos 3
+    datos_viabilidad TEXT, 
+    foto_url TEXT, 
+    FOREIGN KEY(viaje_id) REFERENCES viajes(id)
+  );
   CREATE TABLE IF NOT EXISTS votos_realizados (viaje_id INTEGER, usuario_id INTEGER, UNIQUE(viaje_id, usuario_id));
   CREATE TABLE IF NOT EXISTS disponibilidad (id INTEGER PRIMARY KEY, viaje_id INTEGER, usuario_id INTEGER, fecha TEXT, UNIQUE(usuario_id, fecha));
 `);
@@ -116,11 +128,57 @@ app.get('/api/voting/candidaturas', (req, res) => { /* ... Mismo código ... */
 app.post('/api/voting/proponer', async (req, res) => { /* ... Mismo código ... */
     const { viajeId, usuarioId, ciudad } = req.body; let fotoUrl = null; try { const placesUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(ciudad)}&key=${GOOGLE_API_KEY}`; const placesResp = await axios.get(placesUrl); if (placesResp.data.results?.length > 0 && placesResp.data.results[0].photos) { fotoUrl = `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photoreference=${placesResp.data.results[0].photos[0].photo_reference}&key=${GOOGLE_API_KEY}`; } } catch (e) { console.log("⚠️ Sin foto"); } try { db.prepare('INSERT INTO candidaturas (viaje_id, usuario_id, ciudad, datos_viabilidad, foto_url) VALUES (?, ?, ?, ?, ?)').run(viajeId, usuarioId, ciudad, generarViabilidad(ciudad), fotoUrl); res.json({ success: true }); } catch (e) { res.status(500).json({ error: "Error BD" }); }
 });
-app.post('/api/voting/enviar-ranking', (req, res) => { /* ... Mismo código ... */
-    const { viajeId, usuarioId, rankingIds } = req.body; try { const yaVoto = db.prepare('SELECT 1 FROM votos_realizados WHERE viaje_id = ? AND usuario_id = ?').get(viajeId, usuarioId); if (yaVoto) return res.status(400).json({ error: "Ya votaste" }); const updatePoints = db.prepare('UPDATE candidaturas SET puntos = puntos + ? WHERE id = ?'); const tx = db.transaction(() => { rankingIds.forEach((candidaturaId, index) => { updatePoints.run(rankingIds.length - index, candidaturaId); }); db.prepare('INSERT INTO votos_realizados (viaje_id, usuario_id) VALUES (?, ?)').run(viajeId, usuarioId); }); tx(); res.json({ success: true }); } catch (e) { res.status(500).json({ error: "Error" }); }
+app.post('/api/voting/enviar-ranking', (req, res) => {
+    const { viajeId, usuarioId, rankingIds } = req.body;
+    try {
+        const yaVoto = db.prepare('SELECT 1 FROM votos_realizados WHERE viaje_id = ? AND usuario_id = ?').get(viajeId, usuarioId);
+        if (yaVoto) return res.status(400).json({ error: "Ya votaste" });
+
+        const updatePoints = db.prepare('UPDATE candidaturas SET puntos = puntos + ?, votos_pos1 = votos_pos1 + ?, votos_pos2 = votos_pos2 + ?, votos_pos3 = votos_pos3 + ? WHERE id = ?');
+
+        const tx = db.transaction(() => {
+            rankingIds.forEach((candidaturaId, index) => {
+                const points = rankingIds.length - index;
+                const pos1 = index === 0 ? 1 : 0;
+                const pos2 = index === 1 ? 1 : 0;
+                const pos3 = index === 2 ? 1 : 0;
+                updatePoints.run(points, pos1, pos2, pos3, candidaturaId);
+            });
+            db.prepare('INSERT INTO votos_realizados (viaje_id, usuario_id) VALUES (?, ?)').run(viajeId, usuarioId);
+        });
+        tx();
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: "Error" }); }
 });
-app.post('/api/voting/cerrar', (req, res) => { /* ... Mismo código ... */
-    const { viajeId } = req.body; const winnerDest = db.prepare('SELECT ciudad FROM candidaturas WHERE viaje_id = ? ORDER BY puntos DESC LIMIT 1').get(viajeId); if (!winnerDest) return res.json({ error: "Sin candidaturas" }); const destinoFinal = winnerDest.ciudad; db.prepare('UPDATE viajes SET destino = ? WHERE id = ?').run(destinoFinal, viajeId); res.json({ success: true, nuevoDestino: destinoFinal });
+app.post('/api/voting/cerrar', (req, res) => {
+    const { viajeId } = req.body;
+    // Logica de Desempate: puntos -> pos1 -> pos2 -> pos3 -> random
+    const candidaturas = db.prepare(`
+        SELECT ciudad FROM candidaturas 
+        WHERE viaje_id = ? 
+        ORDER BY puntos DESC, votos_pos1 DESC, votos_pos2 DESC, votos_pos3 DESC
+    `).all(viajeId);
+
+    if (candidaturas.length === 0) return res.json({ error: "Sin candidaturas" });
+
+    // Detectar empates absolutos para el top 1
+    const top = candidaturas[0];
+    const topPuntos = db.prepare('SELECT puntos, votos_pos1, votos_pos2, votos_pos3 FROM candidaturas WHERE ciudad = ? AND viaje_id = ?').get(top.ciudad, viajeId);
+
+    const empates = db.prepare(`
+        SELECT ciudad FROM candidaturas 
+        WHERE viaje_id = ? 
+        AND puntos = ? AND votos_pos1 = ? AND votos_pos2 = ? AND votos_pos3 = ?
+    `).all(viajeId, topPuntos.puntos, topPuntos.votos_pos1, topPuntos.votos_pos2, topPuntos.votos_pos3);
+
+    let destinoFinal = top.ciudad;
+    if (empates.length > 1) {
+        // Desbloqueo al azar
+        destinoFinal = empates[Math.floor(Math.random() * empates.length)].ciudad;
+    }
+
+    db.prepare('UPDATE viajes SET destino = ? WHERE id = ?').run(destinoFinal, viajeId);
+    res.json({ success: true, nuevoDestino: destinoFinal });
 });
 
 // --- CALENDARIO (ACTUALIZADO) ---
@@ -145,7 +203,51 @@ app.get('/api/calendar/heat', (req, res) => {
     });
 });
 
-app.post('/api/calendar/toggle', (req, res) => { /* ... Mismo código ... */
+// --- CALENDARIO SLIDING WINDOW ---
+app.post('/api/calendar/best-interval', (req, res) => {
+    const { viajeId, duracion } = req.body;
+    const dur = parseInt(duracion) || 4;
+
+    const fechas = db.prepare('SELECT fecha, COUNT(*) as coincidencia FROM disponibilidad WHERE viaje_id = ? GROUP BY fecha ORDER BY fecha ASC').all(viajeId);
+    if (fechas.length === 0) return res.json({ success: false });
+
+    let maxMatch = -1;
+    let bestStart = null;
+
+    // Sliding window logic
+    for (let i = 0; i <= fechas.length - dur; i++) {
+        let currentMatch = 0;
+        // Check if the window is continuous (optional, but requested as "intervalo de esos días")
+        // For simplicity, we calculate the sum of available data within a range.
+        const window = fechas.slice(i, i + dur);
+
+        // Check if dates are consecutive
+        const start = new Date(window[0].fecha);
+        const end = new Date(window[window.length - 1].fecha);
+        const diffDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
+
+        if (diffDays === dur) {
+            currentMatch = window.reduce((acc, f) => acc + f.coincidencia, 0);
+            if (currentMatch > maxMatch) {
+                maxMatch = currentMatch;
+                bestStart = window[0].fecha;
+            }
+        }
+    }
+
+    if (bestStart) {
+        const start = new Date(bestStart);
+        const end = new Date(start);
+        end.setDate(start.getDate() + (dur - 1));
+        const resEnd = end.toISOString().split('T')[0];
+        res.json({ success: true, inicio: bestStart, fin: resEnd });
+    } else {
+        // Fallback: Si no hay días consecutivos marcados, buscar el primero con datos
+        res.json({ success: false });
+    }
+});
+
+app.post('/api/calendar/toggle', (req, res) => {
     const { viajeId, usuarioId, fecha } = req.body; const existe = db.prepare('SELECT id FROM disponibilidad WHERE usuario_id = ? AND fecha = ?').get(usuarioId, fecha); if (existe) { db.prepare('DELETE FROM disponibilidad WHERE id = ?').run(existe.id); res.json({ status: 'removed' }); } else { db.prepare('INSERT INTO disponibilidad (viaje_id, usuario_id, fecha) VALUES (?, ?, ?)').run(viajeId, usuarioId, fecha); res.json({ status: 'added' }); }
 });
 
