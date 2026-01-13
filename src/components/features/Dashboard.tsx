@@ -167,8 +167,8 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     }, [user, view, isWalletOpen]);
 
     // --- FUNCIONES AUXILIARES ---
-    const showAlert = (msg: string) => setAlertConfig({ type: 'alert', msg, action: () => setAlertConfig(null) });
-    const showConfirm = (msg: string, action: () => void) => setAlertConfig({ type: 'confirm', msg, action, onCancel: () => setAlertConfig(null) });
+    const showAlert = (message: string) => setAlertConfig({ type: 'alert', message, onConfirm: () => setAlertConfig(null) });
+    const showConfirm = (message: string, onConfirm: () => void) => setAlertConfig({ type: 'confirm', message, onConfirm, onCancel: () => setAlertConfig(null) });
 
     const checkMyRoles = async () => {
         if (!user) return;
@@ -228,8 +228,8 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
             setWinnerData(user.destino);
         }
 
-        if (!data.yaVoto && data.candidaturas.length > 0 && myRanking.length === 0) {
-            setMyRanking(data.candidaturas);
+        if (!data.yaVoto && data.candidaturas.length > 0) {
+            setMyRanking(current => current.length === 0 ? data.candidaturas : current);
         }
     };
 

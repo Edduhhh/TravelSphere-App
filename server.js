@@ -47,6 +47,14 @@ db.exec(`
     FOREIGN KEY(viaje_id) REFERENCES viajes(id)
   );
   CREATE TABLE IF NOT EXISTS votos_realizados (viaje_id INTEGER, usuario_id INTEGER, UNIQUE(viaje_id, usuario_id));
+  CREATE TABLE IF NOT EXISTS votos_detalle (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    viaje_id INTEGER,
+    usuario_id INTEGER,
+    candidatura_id INTEGER,
+    posicion INTEGER,
+    UNIQUE(viaje_id, usuario_id, candidatura_id)
+  );
   CREATE TABLE IF NOT EXISTS disponibilidad (id INTEGER PRIMARY KEY, viaje_id INTEGER, usuario_id INTEGER, fecha TEXT, UNIQUE(usuario_id, fecha));
 `);
 
@@ -135,14 +143,18 @@ app.post('/api/voting/enviar-ranking', (req, res) => {
         if (yaVoto) return res.status(400).json({ error: "Ya votaste" });
 
         const updatePoints = db.prepare('UPDATE candidaturas SET puntos = puntos + ?, votos_pos1 = votos_pos1 + ?, votos_pos2 = votos_pos2 + ?, votos_pos3 = votos_pos3 + ? WHERE id = ?');
+        const insertDetalle = db.prepare('INSERT INTO votos_detalle (viaje_id, usuario_id, candidatura_id, posicion) VALUES (?, ?, ?, ?)');
 
         const tx = db.transaction(() => {
             rankingIds.forEach((candidaturaId, index) => {
                 const points = rankingIds.length - index;
-                const pos1 = index === 0 ? 1 : 0;
-                const pos2 = index === 1 ? 1 : 0;
-                const pos3 = index === 2 ? 1 : 0;
+                const pos = index + 1;
+                const pos1 = pos === 1 ? 1 : 0;
+                const pos2 = pos === 2 ? 1 : 0;
+                const pos3 = pos === 3 ? 1 : 0;
+
                 updatePoints.run(points, pos1, pos2, pos3, candidaturaId);
+                insertDetalle.run(viajeId, usuarioId, candidaturaId, pos);
             });
             db.prepare('INSERT INTO votos_realizados (viaje_id, usuario_id) VALUES (?, ?)').run(viajeId, usuarioId);
         });
@@ -152,33 +164,43 @@ app.post('/api/voting/enviar-ranking', (req, res) => {
 });
 app.post('/api/voting/cerrar', (req, res) => {
     const { viajeId } = req.body;
-    // Logica de Desempate: puntos -> pos1 -> pos2 -> pos3 -> random
-    const candidaturas = db.prepare(`
-        SELECT ciudad FROM candidaturas 
-        WHERE viaje_id = ? 
-        ORDER BY puntos DESC, votos_pos1 DESC, votos_pos2 DESC, votos_pos3 DESC
-    `).all(viajeId);
+    try {
+        // Query robusta: Borda -> Pos1 -> Pos2 -> Pos3 -> RANDOM (Triple empate friendly)
+        const ganador = db.prepare(`
+            SELECT c.ciudad 
+            FROM candidaturas c
+            LEFT JOIN votos_detalle v1 ON c.id = v1.candidatura_id AND v1.posicion = 1
+            LEFT JOIN votos_detalle v2 ON c.id = v2.candidatura_id AND v2.posicion = 2
+            LEFT JOIN votos_detalle v3 ON c.id = v3.candidatura_id AND v3.posicion = 3
+            WHERE c.viaje_id = ?
+            GROUP BY c.id
+            ORDER BY 
+                c.puntos DESC, 
+                COUNT(v1.id) DESC, 
+                COUNT(v2.id) DESC, 
+                COUNT(v3.id) DESC, 
+                RANDOM()
+            LIMIT 1
+        `).get(viajeId);
 
-    if (candidaturas.length === 0) return res.json({ error: "Sin candidaturas" });
+        let finalDestino = ganador ? ganador.ciudad : null;
 
-    // Detectar empates absolutos para el top 1
-    const top = candidaturas[0];
-    const topPuntos = db.prepare('SELECT puntos, votos_pos1, votos_pos2, votos_pos3 FROM candidaturas WHERE ciudad = ? AND viaje_id = ?').get(top.ciudad, viajeId);
+        // Fail-safe: Si por algo la query falla, elegir uno random de la lista
+        if (!finalDestino) {
+            const fallback = db.prepare('SELECT ciudad FROM candidaturas WHERE viaje_id = ? ORDER BY RANDOM() LIMIT 1').get(viajeId);
+            if (fallback) finalDestino = fallback.ciudad;
+        }
 
-    const empates = db.prepare(`
-        SELECT ciudad FROM candidaturas 
-        WHERE viaje_id = ? 
-        AND puntos = ? AND votos_pos1 = ? AND votos_pos2 = ? AND votos_pos3 = ?
-    `).all(viajeId, topPuntos.puntos, topPuntos.votos_pos1, topPuntos.votos_pos2, topPuntos.votos_pos3);
-
-    let destinoFinal = top.ciudad;
-    if (empates.length > 1) {
-        // Desbloqueo al azar
-        destinoFinal = empates[Math.floor(Math.random() * empates.length)].ciudad;
+        if (finalDestino) {
+            db.prepare('UPDATE viajes SET destino = ? WHERE id = ?').run(finalDestino, viajeId);
+            res.json({ success: true, nuevoDestino: finalDestino });
+        } else {
+            res.status(404).json({ error: "No hay candidaturas para cerrar" });
+        }
+    } catch (e) {
+        console.error("Error al cerrar votación:", e);
+        res.status(500).json({ error: "Fail-safe activado" });
     }
-
-    db.prepare('UPDATE viajes SET destino = ? WHERE id = ?').run(destinoFinal, viajeId);
-    res.json({ success: true, nuevoDestino: destinoFinal });
 });
 
 // --- CALENDARIO (ACTUALIZADO) ---
