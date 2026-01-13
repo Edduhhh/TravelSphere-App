@@ -260,6 +260,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         showConfirm("¿Eliminar esta propuesta permanentemente?", async () => {
             try {
                 await fetch('http://localhost:3001/api/voting/eliminar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidaturaId, viajeId: user.viajeId }) });
+                setAlertConfig(null);
                 refreshCandidates();
             } catch (e) { showAlert("Error al eliminar"); }
         });
