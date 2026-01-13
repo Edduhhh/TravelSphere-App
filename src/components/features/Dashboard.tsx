@@ -283,38 +283,29 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         }
     };
 
-    const handleDelete = async (id: number) => {
-        // 1. Usar la alerta bonita, no window.confirm
-        showConfirm("¿Seguro que quieres borrar esta propuesta?", async () => {
-            isPaused.current = true;
+    const handleDelete = (id: number) => {
+        // 1. PAUSA EL REFRESCO
+        isPaused.current = true;
+        showConfirm("¿Borrar definitivamente?", async () => {
             try {
-                // 2. ACTUALIZACIÓN OPTIMISTA (Borrar de la pantalla INMEDIATAMENTE)
-                // Esto hace que el usuario vea que se borra al instante, sin esperar al servidor
-                const backup = [...candidaturas];
+                // 2. BORRADO VISUAL INMEDIATO
                 setCandidaturas(prev => prev.filter(c => c.id !== id));
                 setMyRanking(prev => prev.filter(c => c.id !== id));
-
-                // 3. Petición al servidor en segundo plano
-                const res = await fetch('http://localhost:3001/api/voting/borrar', {
+                // 3. PETICIÓN AL SERVIDOR
+                await fetch('http://localhost:3001/api/voting/borrar', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ viajeId: user.viajeId, candidaturaId: id })
+                    body: JSON.stringify({ candidaturaId: id }) // Asegura que el backend espera 'candidaturaId'
                 });
-                const data = await res.json();
-                // 4. Si falla el servidor, restauramos la copia (Rollback)
-                if (!data.success) {
-                    setCandidaturas(backup);
-                    showAlert("Error al borrar: " + (data.message || "Inténtalo de nuevo"));
-                } else {
-                    // Si va bien, forzamos refresco para asegurar
+                setAlertConfig(null);
+                // 4. ESPERAR Y REACTIVAR REFRESCO
+                setTimeout(() => {
                     refreshCandidates();
-                }
+                    isPaused.current = false;
+                }, 1000);
             } catch (e) {
-                console.error(e);
-                showAlert("Error de conexión");
-            } finally {
-                setAlertConfig(null); // Cerrar la alerta siempre
-                setTimeout(() => { isPaused.current = false; }, 1000);
+                showAlert("Error al borrar");
+                isPaused.current = false;
             }
         });
     };
