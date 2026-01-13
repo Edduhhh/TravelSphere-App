@@ -157,6 +157,12 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     }, [user]);
 
     useEffect(() => {
+        // Al cambiar de viaje, pantalla en blanco INMEDIATAMENTE
+        setCandidaturas([]);
+        setMyRanking([]);
+    }, [user?.viajeId]);
+
+    useEffect(() => {
         if (!user) return;
         let isMounted = true;
         const intervalId = setInterval(async () => {
