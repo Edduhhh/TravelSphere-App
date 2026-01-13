@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Wallet, Search, X, Plus, User, LogIn, LogOut, Target, MapPin, ArrowRight, Compass, Users, Vote, Heart, Plane, Clock, Sun, Calendar, ChevronLeft, ChevronRight, Check, Trophy, ListOrdered, Star, AlertTriangle, Gavel, DollarSign, Hotel, Thermometer, Info, GripVertical, Map, BarChart3, PieChart, PlaneLanding, PlaneTakeoff, Settings, Timer, Loader2 } from 'lucide-react';
+import { Wallet, Search, X, Plus, User, LogIn, LogOut, Target, MapPin, ArrowRight, Compass, Users, Vote, Heart, Plane, Clock, Sun, Calendar, ChevronLeft, ChevronRight, Check, Trophy, ListOrdered, Star, AlertTriangle, Gavel, DollarSign, Hotel, Thermometer, Info, GripVertical, Map, BarChart3, PieChart, PlaneLanding, PlaneTakeoff, Settings, Timer, Loader2, Trash2 } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -118,6 +118,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const [rangeStart, setRangeStart] = useState<string | null>(null);
     const [rangeEnd, setRangeEnd] = useState<string | null>(null);
     const [suggestedInterval, setSuggestedInterval] = useState<{ inicio: string, fin: string } | null>(null);
+    const isPolling = useRef(false);
 
     // Dashboard & Wallet
     const [searchQuery, setSearchQuery] = useState("Tapas");
@@ -215,28 +216,53 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     };
 
     const refreshCandidates = async () => {
-        if (!user) return;
-        const res = await fetch(`http://localhost:3001/api/voting/candidaturas?viajeId=${user.viajeId}&usuarioId=${user.id}`);
-        const data = await res.json();
+        if (!user || isPolling.current) return;
+        isPolling.current = true;
+        try {
+            const res = await fetch(`http://localhost:3001/api/voting/candidaturas?viajeId=${user.viajeId}&usuarioId=${user.id}`);
+            const data = await res.json();
 
-        if (JSON.stringify(data.candidaturas) !== JSON.stringify(candidaturas)) {
-            setCandidaturas(data.candidaturas || []);
-        }
-        setHasVoted(data.yaVoto);
+            if (JSON.stringify(data.candidaturas) !== JSON.stringify(candidaturas)) {
+                setCandidaturas(data.candidaturas || []);
+            }
+            setHasVoted(data.yaVoto);
 
-        if (!user.destino.startsWith("PENDIENTE") && !winnerData) {
-            setWinnerData(user.destino);
-        }
+            if (!user.destino.startsWith("PENDIENTE") && !winnerData) {
+                setWinnerData(user.destino);
+            }
 
-        if (!data.yaVoto && data.candidaturas.length > 0) {
-            setMyRanking(current => current.length === 0 ? data.candidaturas : current);
+            if (!data.yaVoto && data.candidaturas.length > 0) {
+                setMyRanking(current => current.length === 0 ? data.candidaturas : current);
+            }
+        } catch (e) {
+            console.error("Error polling candidates");
+        } finally {
+            isPolling.current = false;
         }
     };
 
     const handlePropose = async () => {
         if (!newProposal) return;
-        await fetch('http://localhost:3001/api/voting/proponer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, ciudad: newProposal }) });
-        setNewProposal(''); setModalAction(null); refreshCandidates();
+        const tempProposal = { id: Date.now(), ciudad: newProposal, puntos: 0, propuesto_por: user.nombre, datos: { resumen_ia: "Analizando..." } };
+        setCandidaturas(prev => [...prev, tempProposal]);
+        setMyRanking(prev => [...prev, tempProposal]);
+        setNewProposal(''); setModalAction(null);
+        try {
+            await fetch('http://localhost:3001/api/voting/proponer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, ciudad: newProposal }) });
+            refreshCandidates();
+        } catch (e) {
+            showAlert("Error al proponer destino");
+            refreshCandidates();
+        }
+    };
+
+    const handleDeleteCandidatura = (candidaturaId: number) => {
+        showConfirm("¿Eliminar esta propuesta permanentemente?", async () => {
+            try {
+                await fetch('http://localhost:3001/api/voting/eliminar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidaturaId, viajeId: user.viajeId }) });
+                refreshCandidates();
+            } catch (e) { showAlert("Error al eliminar"); }
+        });
     };
 
     const handleDragEnd = (event: any) => {
@@ -295,12 +321,15 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     };
 
     const refreshCalendar = async () => {
-        if (!user) return;
-        const res = await fetch(`http://localhost:3001/api/calendar/heat?viajeId=${user.viajeId}`);
-        const data = await res.json();
-        setHeatmap(data.mapaCalor || {});
-        setTotalUsers(data.totalUsuarios || 1);
-        setFechasOficiales(data.fechasOficiales);
+        if (!user || isPolling.current) return;
+        isPolling.current = true;
+        try {
+            const res = await fetch(`http://localhost:3001/api/calendar/heat?viajeId=${user.viajeId}`);
+            const data = await res.json();
+            setHeatmap(data.mapaCalor || {});
+            setTotalUsers(data.totalUsuarios || 1);
+            setFechasOficiales(data.fechasOficiales);
+        } finally { isPolling.current = false; }
     };
 
     useEffect(() => {
@@ -351,7 +380,21 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         try { const res = await fetch(`http://localhost:3001/api/info-ciudad?city=${encodeURIComponent(city)}&country=`); const data = await res.json(); if (data.coords) setCityCoords([data.coords.lat, data.coords.lng]); } catch (e) { console.error("Error mapa"); } finally { setIsLoadingMap(false); }
     };
 
-    const refreshWallet = async () => { if (!user) return; try { const resBote = await fetch(`http://localhost:3001/api/wallet/estado?viajeId=${user.viajeId}`); const dataBote = await resBote.json(); setWalletData(dataBote); const resGastos = await fetch(`http://localhost:3001/api/wallet/mis-gastos?usuarioId=${user.id}`); const dataGastos = await resGastos.json(); setMisGastos(dataGastos.gastos || []); const yo = dataBote.usuarios.find((u: any) => u.id === user.id); if (yo) setUser((prev: any) => ({ ...prev, esTesorero: yo.es_tesorero })); } catch (error) { console.error("Error wallet"); } };
+    const refreshWallet = async () => {
+        if (!user || isPolling.current) return;
+        isPolling.current = true;
+        try {
+            const resBote = await fetch(`http://localhost:3001/api/wallet/estado?viajeId=${user.viajeId}`);
+            const dataBote = await resBote.json();
+            setWalletData(dataBote);
+            const resGastos = await fetch(`http://localhost:3001/api/wallet/mis-gastos?usuarioId=${user.id}`);
+            const dataGastos = await resGastos.json();
+            setMisGastos(dataGastos.gastos || []);
+            const yo = dataBote.usuarios.find((u: any) => u.id === user.id);
+            if (yo) setUser((prev: any) => ({ ...prev, esTesorero: yo.es_tesorero }));
+        } catch (error) { console.error("Error wallet"); }
+        finally { isPolling.current = false; }
+    };
 
     const handleLogOut = () => {
         showConfirm("¿Quieres salir de este viaje? Perderás el acceso directo hasta que vuelvas a introducir el código.", () => {
@@ -399,7 +442,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                             {myRanking.length === 0 && (<div className="text-center py-12 text-[#A8A29E] italic"><p>No hay destinos propuestos aún.</p><button onClick={() => setModalAction({ type: 'proponer' })} className="mt-4 text-[#1B4332] font-bold underline">Sé el primero en proponer</button></div>)}
                             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
                                 <SortableContext items={myRanking.map(c => c.id)} strategy={verticalListSortingStrategy}>
-                                    <div className="space-y-3 flex-1">{myRanking.map((c, index) => (<SortableItem key={c.id} id={c.id}>{(attributes: any, listeners: any) => (<div className="bg-white p-4 rounded-xl shadow-md border border-[#1B4332]/20 flex items-center gap-4 animate-enter group hover:shadow-lg transition-shadow"><div {...attributes} {...listeners} className="text-[#A8A29E] cursor-grab active:cursor-grabbing p-2 hover:bg-slate-100 rounded focus:outline-none"><GripVertical size={20} /></div><div className="bg-[#1B4332] text-white w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shadow-sm z-10">{index + 1}</div><div className="flex-1 cursor-pointer select-none" onClick={() => { setSelectedCandidate(c); setDossierTab('general'); }}><p className="font-bold text-[#1B4332] text-lg">{c.ciudad}</p><div className="flex gap-3 text-xs text-[#78716C]"><span className="flex items-center gap-1"><Plane size={12} /> {c.datos?.logistica?.precio_total_vuelos || '---'}€</span><span className="flex items-center gap-1 border-b border-dashed border-[#78716C]"><Info size={12} /> Ver Informe</span></div></div></div>)}</SortableItem>))}</div></SortableContext></DndContext>
+                                    <div className="space-y-3 flex-1">{myRanking.map((c, index) => (<SortableItem key={c.id} id={c.id}>{(attributes: any, listeners: any) => (<div className="bg-white p-4 rounded-xl shadow-md border border-[#1B4332]/20 flex items-center gap-4 animate-enter group hover:shadow-lg transition-shadow"><div {...attributes} {...listeners} className="text-[#A8A29E] cursor-grab active:cursor-grabbing p-2 hover:bg-slate-100 rounded focus:outline-none"><GripVertical size={20} /></div><div className="bg-[#1B4332] text-white w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shadow-sm z-10">{index + 1}</div><div className="flex-1 cursor-pointer select-none" onClick={() => { setSelectedCandidate(c); setDossierTab('general'); }}><p className="font-bold text-[#1B4332] text-lg">{c.ciudad}</p><div className="flex gap-3 text-xs text-[#78716C]"><span className="flex items-center gap-1"><Plane size={12} /> {c.datos?.logistica?.precio_total_vuelos || '---'}€</span><span className="flex items-center gap-1 border-b border-dashed border-[#78716C]"><Info size={12} /> Ver Informe</span></div></div>{user?.esAdmin && (<button onClick={(e) => { e.stopPropagation(); handleDeleteCandidatura(c.id); }} className="p-2 text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"><Trash2 size={18} /></button>)}</div>)}</SortableItem>))}</div></SortableContext></DndContext>
                             {myRanking.length > 0 && <button onClick={submitRanking} className="w-full py-4 mt-8 btn-primary shadow-xl text-lg font-bold tracking-wide">CONFIRMAR ESTE ORDEN</button>}
                         </div>
                     </div>
