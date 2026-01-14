@@ -118,6 +118,8 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const [rangeStart, setRangeStart] = useState<string | null>(null);
     const [rangeEnd, setRangeEnd] = useState<string | null>(null);
     const [suggestedInterval, setSuggestedInterval] = useState<{ inicio: string, fin: string } | null>(null);
+
+    // --- NOTA: isPaused eliminado de la lógica para evitar bloqueos ---
     const isPaused = useRef(false);
 
     // Dashboard & Wallet
@@ -162,24 +164,24 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         setMyRanking([]);
     }, [user?.viajeId]);
 
+    // --- POLLING DESBLOQUEADO (Sin isPaused) ---
     useEffect(() => {
         if (!user) return;
         let isMounted = true;
         const intervalId = setInterval(async () => {
-            // ESCUDO: Si el componente no está montado O el usuario está tocando algo (isPaused), NO actualizar.
-            if (!isMounted || isPaused.current) return;
+            if (!isMounted) return; // SIN BLOQUEOS
             try {
                 await refreshCandidates();
                 await refreshCalendar();
                 await refreshWallet();
                 await checkMyRoles();
             } catch (error) {
-                console.error("Polling silencioso error:", error);
+                console.error("Polling error", error);
             }
-        }, 3000); // 3 segundos para reducir carga
+        }, 3000);
         return () => {
             isMounted = false;
-            clearInterval(intervalId); // MATAR ZOMBIES
+            clearInterval(intervalId);
         };
     }, [user, view]);
 
@@ -190,7 +192,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const checkMyRoles = async () => {
         if (!user) return;
         try {
-            const res = await fetch(`http://localhost:3001/api/roles/lista?viajeId=${user.viajeId}`);
+            const res = await fetch(`http://localhost:3005/api/roles/lista?viajeId=${user.viajeId}`);
             const data = await res.json();
             const me = data.usuarios.find((u: any) => u.id === user.id);
             if (me && (me.es_admin !== user.esAdmin || me.es_tesorero !== user.esTesorero)) {
@@ -205,7 +207,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         const destinoFinal = isVoting ? `PENDIENTE: ${lobbyForm.destino}` : lobbyForm.destino;
         if (!lobbyForm.nombre || !destinoFinal) return setLobbyError("Faltan datos.");
         try {
-            const res = await fetch('http://localhost:3001/api/lobby/crear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nombreAdmin: lobbyForm.nombre, destino: destinoFinal }) });
+            const res = await fetch('http://localhost:3005/api/lobby/crear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nombreAdmin: lobbyForm.nombre, destino: destinoFinal }) });
             const data = await res.json();
             if (data.success) {
                 const newUser = { id: data.userId, nombre: lobbyForm.nombre, esAdmin: 1, esTesorero: 1, viajeId: data.viajeId, viajeCodigo: data.codigo, destino: destinoFinal };
@@ -219,7 +221,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const handleJoinTrip = async () => {
         if (!lobbyForm.nombre || !lobbyForm.codigo) return setLobbyError("Faltan datos.");
         try {
-            const res = await fetch('http://localhost:3001/api/lobby/unirse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nombre: lobbyForm.nombre, codigo: lobbyForm.codigo }) });
+            const res = await fetch('http://localhost:3005/api/lobby/unirse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nombre: lobbyForm.nombre, codigo: lobbyForm.codigo }) });
             const data = await res.json();
             if (data.success) {
                 const newUser = { id: data.userId, nombre: lobbyForm.nombre, esAdmin: 0, esTesorero: 0, viajeId: data.viajeId, viajeCodigo: lobbyForm.codigo, destino: data.destino };
@@ -233,10 +235,12 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     const refreshCandidates = async () => {
         if (!user) return;
-        const res = await fetch(`http://localhost:3001/api/voting/candidaturas?viajeId=${user.viajeId}&usuarioId=${user.id}`);
+        const res = await fetch(`http://localhost:3005/api/voting/candidaturas?viajeId=${user.viajeId}&usuarioId=${user.id}`);
         const data = await res.json();
 
         const serverCands = data.candidaturas || [];
+
+        // 1. Actualizamos la lista maestra
         if (JSON.stringify(serverCands) !== JSON.stringify(candidaturas)) {
             setCandidaturas(serverCands);
         }
@@ -246,71 +250,86 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
             setWinnerData(user.destino);
         }
 
-        if (!data.yaVoto && serverCands.length > 0) {
+        // 2. AQUÍ ESTABA EL FALLO: Sincronización del Ranking Visual
+        if (!data.yaVoto) {
             setMyRanking(current => {
+                // Si mi lista local está vacía, cópialo todo tal cual viene del servidor
                 if (current.length === 0) return serverCands;
+
+                // A. MANTENER ORDEN: Nos quedamos con los que ya teníamos (si siguen existiendo en el servidor)
                 const serverIds = new Set(serverCands.map((c: any) => c.id));
-                const filtered = current.filter(c => serverIds.has(c.id));
-                return filtered.length !== current.length ? filtered : current;
+                const existingOrdered = current.filter(c => serverIds.has(c.id));
+
+                // B. DETECTAR NUEVOS: Buscamos qué ciudades trae el servidor que NO tenemos en local
+                const currentIds = new Set(current.map(c => c.id));
+                const newItems = serverCands.filter((c: any) => !currentIds.has(c.id));
+
+                // Si no hay nada que borrar ni nada que añadir, no tocamos nada (para no parpadear)
+                if (existingOrdered.length === current.length && newItems.length === 0) {
+                    return current;
+                }
+
+                // C. FUSIÓN: Tu orden actual + Los nuevos al final
+                return [...existingOrdered, ...newItems];
             });
         }
     };
 
+    // --- FUNCIÓN PROPONER (Sincronía Pura) ---
     const handlePropose = async () => {
         if (!newProposal.trim()) return;
-        // 1. LEVANTAR ESCUDO (Pausar actualizaciones del servidor)
-        isPaused.current = true;
+
         try {
-            // 2. UI OPTIMISTA (Feedback inmediato)
-            const tempId = Date.now();
-            // Añadir inmediatamente a la lista local
-            setCandidaturas(prev => [...prev, { id: tempId, ciudad: newProposal, votos: 0, esTemp: true }]);
-            setNewProposal('');
-            setModalAction(null);
-            // 3. ENVIAR AL BACKEND
-            await fetch('http://localhost:3001/api/voting/proponer', {
+            // 1. Guardar en servidor
+            const res = await fetch('http://localhost:3005/api/voting/proponer', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, ciudad: newProposal })
             });
-            // 4. MANTENER ESCUDO UN POCO MÁS (Para dar tiempo a la DB)
-            setTimeout(() => {
-                refreshCandidates();
-                isPaused.current = false; // BAJAR ESCUDO
-            }, 1500);
+
+            const data = await res.json();
+
+            if (data.success) {
+                // 2. Limpiar el input
+                setNewProposal('');
+                setModalAction(null); // Cierra el modal si estaba abierto
+
+                // 3. ¡AQUÍ ESTÁ LA CLAVE! Forzamos la recarga de datos
+                // Esperamos un poquito (100ms) para asegurar que la base de datos ya tiene el dato nuevo
+                setTimeout(async () => {
+                    await refreshCandidates();
+                }, 100);
+            } else {
+                alert("Error al añadir: " + JSON.stringify(data));
+            }
         } catch (e) {
             console.error(e);
-            showAlert("Error al proponer");
-            isPaused.current = false;
+            alert("Error de conexión (3005).");
         }
     };
 
-    const handleDelete = (id: any) => {
-        // 1. LEVANTAR ESCUDO
-        isPaused.current = true;
-        showConfirm("¿Borrar esta propuesta?", async () => {
-            try {
-                // 2. UI OPTIMISTA (Borrar visualmente YA)
-                setCandidaturas(prev => prev.filter(c => c.id !== id));
-                setMyRanking(prev => prev.filter(c => c.id !== id));
-                // 3. ENVIAR AL BACKEND
-                await fetch('http://localhost:3001/api/voting/borrar', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    // ENVIAMOS 'id' CLARAMENTE
-                    body: JSON.stringify({ id: id })
-                });
-                setAlertConfig(null);
-                // 4. ESPERAR Y REACTIVAR
-                setTimeout(() => {
-                    refreshCandidates();
-                    isPaused.current = false;
-                }, 1500);
-            } catch (e) {
-                console.error(e);
-                isPaused.current = false;
+    // --- FUNCIÓN BORRAR (Sincronía Pura) ---
+    const handleDelete = async (id: any) => {
+        if (!window.confirm("¿Seguro que quieres borrar esta ciudad?")) return;
+
+        try {
+            const res = await fetch('http://localhost:3005/api/voting/borrar', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: id })
+            });
+
+            const data = await res.json();
+
+            if (data.success) {
+                await refreshCandidates(); // Refresco forzado
+            } else {
+                alert("No se pudo borrar: " + JSON.stringify(data));
             }
-        });
+        } catch (e) {
+            console.error(e);
+            alert("Error de conexión al borrar.");
+        }
     };
 
     const handleDragEnd = (event: any) => {
@@ -326,7 +345,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     const submitRanking = async () => {
         const rankingIds = myRanking.map(c => c.id);
-        const res = await fetch('http://localhost:3001/api/voting/enviar-ranking', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, rankingIds }) });
+        const res = await fetch('http://localhost:3005/api/voting/enviar-ranking', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, rankingIds }) });
         if (res.ok) { refreshCandidates(); showAlert("¡Voto registrado! Esperando resultados..."); }
     };
 
@@ -335,7 +354,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
         showConfirm("Esta acción cerrará la votación para siempre. ¿Proceder?", async () => {
             try {
-                const res = await fetch('http://localhost:3001/api/voting/cerrar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId }) });
+                const res = await fetch('http://localhost:3005/api/voting/cerrar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId }) });
                 const data = await res.json();
                 setAlertConfig(null);
                 if (data.success) {
@@ -351,7 +370,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     const openRolesModal = async () => {
         if (!user?.esAdmin) return;
-        const res = await fetch(`http://localhost:3001/api/roles/lista?viajeId=${user.viajeId}`);
+        const res = await fetch(`http://localhost:3005/api/roles/lista?viajeId=${user.viajeId}`);
         const data = await res.json();
         setUsersList(data.usuarios);
         setShowRolesModal(true);
@@ -359,7 +378,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     const toggleRole = async (targetUserId: number, role: 'es_admin' | 'es_tesorero', currentValue: boolean) => {
         setUsersList(usersList.map(u => u.id === targetUserId ? { ...u, [role === 'es_admin' ? 'es_admin' : 'es_tesorero']: !currentValue ? 1 : 0 } : u));
-        await fetch('http://localhost:3001/api/roles/actualizar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usuarioId: targetUserId, rol: role, valor: !currentValue }) });
+        await fetch('http://localhost:3005/api/roles/actualizar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usuarioId: targetUserId, rol: role, valor: !currentValue }) });
 
         if (targetUserId === user.id) {
             const updatedUser = { ...user, [role === 'es_admin' ? 'esAdmin' : 'esTesorero']: !currentValue ? 1 : 0 };
@@ -370,7 +389,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     const refreshCalendar = async () => {
         if (!user) return;
-        const res = await fetch(`http://localhost:3001/api/calendar/heat?viajeId=${user.viajeId}`);
+        const res = await fetch(`http://localhost:3005/api/calendar/heat?viajeId=${user.viajeId}`);
         const data = await res.json();
         setHeatmap(data.mapaCalor || {});
         setTotalUsers(data.totalUsuarios || 1);
@@ -381,7 +400,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         if (view === 'calendar_room' && selectionMode && tripDuration > 0) {
             const fetchBestInterval = async () => {
                 try {
-                    const res = await fetch('http://localhost:3001/api/calendar/best-interval', {
+                    const res = await fetch('http://localhost:3005/api/calendar/best-interval', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ viajeId: user.viajeId, duracion: tripDuration })
@@ -412,26 +431,26 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
             const endYear = endDate.getFullYear(); const endMonth = String(endDate.getMonth() + 1).padStart(2, '0'); const endDay = String(endDate.getDate()).padStart(2, '0');
             setRangeEnd(`${endYear}-${endMonth}-${endDay}`);
         } else {
-            await fetch('http://localhost:3001/api/calendar/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, fecha }) });
+            await fetch('http://localhost:3005/api/calendar/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, fecha }) });
             refreshCalendar();
         }
     };
 
-    const confirmFechas = async () => { if (!rangeStart || !rangeEnd) return; showConfirm(`¿Fijar viaje del ${rangeStart} al ${rangeEnd}?`, async () => { await fetch('http://localhost:3001/api/calendar/fijar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId, fechaInicio: rangeStart, fechaFin: rangeEnd }) }); setAlertConfig(null); refreshCalendar(); setSelectionMode(false); }); };
+    const confirmFechas = async () => { if (!rangeStart || !rangeEnd) return; showConfirm(`¿Fijar viaje del ${rangeStart} al ${rangeEnd}?`, async () => { await fetch('http://localhost:3005/api/calendar/fijar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId, fechaInicio: rangeStart, fechaFin: rangeEnd }) }); setAlertConfig(null); refreshCalendar(); setSelectionMode(false); }); };
 
     const fetchCityCoords = async (city: string) => {
         if (!city) return;
         setIsLoadingMap(true);
-        try { const res = await fetch(`http://localhost:3001/api/info-ciudad?city=${encodeURIComponent(city)}&country=`); const data = await res.json(); if (data.coords) setCityCoords([data.coords.lat, data.coords.lng]); } catch (e) { console.error("Error mapa"); } finally { setIsLoadingMap(false); }
+        try { const res = await fetch(`http://localhost:3005/api/info-ciudad?city=${encodeURIComponent(city)}&country=`); const data = await res.json(); if (data.coords) setCityCoords([data.coords.lat, data.coords.lng]); } catch (e) { console.error("Error mapa"); } finally { setIsLoadingMap(false); }
     };
 
     const refreshWallet = async () => {
         if (!user) return;
         try {
-            const resBote = await fetch(`http://localhost:3001/api/wallet/estado?viajeId=${user.viajeId}`);
+            const resBote = await fetch(`http://localhost:3005/api/wallet/estado?viajeId=${user.viajeId}`);
             const dataBote = await resBote.json();
             setWalletData(dataBote);
-            const resGastos = await fetch(`http://localhost:3001/api/wallet/mis-gastos?usuarioId=${user.id}`);
+            const resGastos = await fetch(`http://localhost:3005/api/wallet/mis-gastos?usuarioId=${user.id}`);
             const dataGastos = await resGastos.json();
             setMisGastos(dataGastos.gastos || []);
             const yo = dataBote.usuarios.find((u: any) => u.id === user.id);
@@ -451,9 +470,25 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     useEffect(() => { if ((view === 'dashboard' || view === 'calendar_room') && isWalletOpen) refreshWallet(); }, [isWalletOpen, view]);
 
-    const ejecutarAccion = async () => { if (!inputValue) return; const monto = Number(inputValue); const headers = { 'Content-Type': 'application/json' }; if (modalAction.type === 'crearRonda') await fetch('http://localhost:3001/api/wallet/nueva-ronda', { method: 'POST', headers, body: JSON.stringify({ viajeId: user.viajeId, monto }) }); else if (modalAction.type === 'pagar') await fetch('http://localhost:3001/api/wallet/pagar', { method: 'POST', headers, body: JSON.stringify({ usuarioId: modalAction.data.id, cantidad: monto }) }); else if (modalAction.type === 'adelantar') await fetch('http://localhost:3001/api/wallet/adelantar', { method: 'POST', headers, body: JSON.stringify({ usuarioId: user.id, monto, concepto: inputValue2 || 'Varios' }) }); else if (modalAction.type === 'gastoPersonal') await fetch('http://localhost:3001/api/wallet/nuevo-gasto-personal', { method: 'POST', headers, body: JSON.stringify({ usuarioId: user.id, monto, concepto: inputValue2 || 'Capricho' }) }); else if (modalAction.type === 'cambiarTesorero') { await fetch('http://localhost:3001/api/wallet/cambiar-tesorero', { method: 'POST', headers, body: JSON.stringify({ viajeId: user.viajeId, nuevoTesoreroId: monto }) }); showAlert("Cargo cedido."); } setModalAction(null); setInputValue(''); setInputValue2(''); refreshWallet(); };
+    const ejecutarAccion = async () => {
+        if (!inputValue) return;
+        const monto = Number(inputValue);
+        const headers = { 'Content-Type': 'application/json' };
+        if (modalAction.type === 'crearRonda') await fetch('http://localhost:3005/api/wallet/nueva-ronda', { method: 'POST', headers, body: JSON.stringify({ viajeId: user.viajeId, monto }) });
+        else if (modalAction.type === 'pagar') await fetch('http://localhost:3005/api/wallet/pagar', { method: 'POST', headers, body: JSON.stringify({ usuarioId: modalAction.data.id, cantidad: monto }) });
+        else if (modalAction.type === 'adelantar') await fetch('http://localhost:3005/api/wallet/adelantar', { method: 'POST', headers, body: JSON.stringify({ usuarioId: user.id, monto, concepto: inputValue2 || 'Varios' }) });
+        else if (modalAction.type === 'gastoPersonal') await fetch('http://localhost:3005/api/wallet/nuevo-gasto-personal', { method: 'POST', headers, body: JSON.stringify({ usuarioId: user.id, monto, concepto: inputValue2 || 'Capricho' }) });
+        else if (modalAction.type === 'cambiarTesorero') {
+            await fetch('http://localhost:3005/api/roles/actualizar', { method: 'POST', headers, body: JSON.stringify({ usuarioId: monto, rol: 'es_tesorero', valor: false }) });
+            showAlert("Cargo cedido.");
+        }
+        setModalAction(null);
+        setInputValue('');
+        setInputValue2('');
+        refreshWallet();
+    };
 
-    const handleSearch = async () => { if (!searchQuery) return; setIsLoadingMap(true); setRecommendations([]); try { const res = await fetch(`http://localhost:3001/api/buscar-sitios?busqueda=${encodeURIComponent(searchQuery)}&lat=${cityCoords[0]}&lng=${cityCoords[1]}&radio=${searchRadius}`); const data = await res.json(); if (data.sitios?.length > 0) setRecommendations(data.sitios); else alert(`Sin resultados.`); } catch (error) { console.error(error); } finally { setIsLoadingMap(false); } };
+    const handleSearch = async () => { if (!searchQuery) return; setIsLoadingMap(true); setRecommendations([]); try { const res = await fetch(`http://localhost:3005/api/buscar-sitios?busqueda=${encodeURIComponent(searchQuery)}&lat=${cityCoords[0]}&lng=${cityCoords[1]}&radio=${searchRadius}`); const data = await res.json(); if (data.sitios?.length > 0) setRecommendations(data.sitios); else alert(`Sin resultados.`); } catch (error) { console.error(error); } finally { setIsLoadingMap(false); } };
 
     const getDaysInMonth = (date: Date) => { const year = date.getFullYear(); const month = date.getMonth(); const days = new Date(year, month + 1, 0).getDate(); const firstDay = new Date(year, month, 1).getDay(); const emptyDays = firstDay === 0 ? 6 : firstDay - 1; return { days, emptyDays }; };
     const { days, emptyDays } = getDaysInMonth(currentMonth);
