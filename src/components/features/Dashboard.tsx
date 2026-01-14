@@ -55,7 +55,7 @@ const CustomAlert = ({ type, message, onConfirm, onCancel }: any) => {
     if (!message) return null;
     const isConfirm = type === 'confirm';
     return (
-        <div className="fixed inset-0 z-[6000] bg-black/40 backdrop-blur-md flex items-center justify-center p-6 animate-enter">
+        <div className="fixed inset-0 z-[10000] bg-black/40 backdrop-blur-md flex items-center justify-center p-6 animate-enter">
             <div className="bg-white w-full max-w-xs rounded-[24px] p-6 shadow-2xl text-center border border-[#F8F5F2]">
                 <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${isConfirm ? 'bg-[#FFF7ED] text-[#C2410C]' : 'bg-[#F0FDF4] text-[#15803d]'}`}>
                     {isConfirm ? <AlertTriangle size={32} /> : <Check size={32} />}
@@ -310,26 +310,30 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     // --- FUNCIÓN BORRAR (Sincronía Pura) ---
     const handleDelete = async (id: any) => {
-        if (!window.confirm("¿Seguro que quieres borrar esta ciudad?")) return;
+        showConfirm("¿Seguro que quieres borrar esta ciudad? Esta acción no se puede deshacer.", async () => {
+            try {
+                const res = await fetch('http://localhost:3005/api/voting/borrar', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: id })
+                });
 
-        try {
-            const res = await fetch('http://localhost:3005/api/voting/borrar', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: id })
-            });
+                const data = await res.json();
 
-            const data = await res.json();
-
-            if (data.success) {
-                await refreshCandidates(); // Refresco forzado
-            } else {
-                alert("No se pudo borrar: " + JSON.stringify(data));
+                if (data.success) {
+                    setAlertConfig(null); // Cerrar el modal de confirmación
+                    await refreshCandidates(); // Refresco forzado
+                    showAlert("Ciudad eliminada correctamente.");
+                } else {
+                    setAlertConfig(null);
+                    showAlert("No se pudo borrar: " + JSON.stringify(data));
+                }
+            } catch (e) {
+                console.error(e);
+                setAlertConfig(null);
+                showAlert("Error de conexión al borrar.");
             }
-        } catch (e) {
-            console.error(e);
-            alert("Error de conexión al borrar.");
-        }
+        });
     };
 
     const handleDragEnd = (event: any) => {
@@ -574,6 +578,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                 )}
 
                 <Modal isOpen={modalAction?.type === 'proponer'} title="Nueva Propuesta" onClose={() => setModalAction(null)}><div className="space-y-4"><div><label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Ciudad</label><input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Kioto" value={newProposal} onChange={e => setNewProposal(e.target.value)} /></div><button onClick={handlePropose} className="w-full py-4 btn-primary text-sm uppercase tracking-widest mt-2">Lanzar Propuesta</button></div></Modal>
+                <CustomAlert {...alertConfig} />
             </div>
         );
     }
