@@ -77,7 +77,7 @@ const CustomAlert = ({ type, message, onConfirm, onCancel }: any) => {
 
 export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any) => {
     // --- ESTADOS ---
-    const [view, setView] = useState<'lobby' | 'dashboard' | 'voting_room' | 'calendar_room'>('lobby');
+    const [view, setView] = useState<'lobby' | 'dashboard' | 'voting_room' | 'calendar_room' | 'seasonality_dashboard'>('lobby');
     const [user, setUser] = useState<any>(null);
 
     // Lobby
@@ -107,6 +107,9 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     // Drag & Drop
     const dragItem = useRef<number | null>(null);
     const dragOverItem = useRef<number | null>(null);
+
+    // Seasonality Dashboard
+    const [selectedMonths, setSelectedMonths] = useState<number[]>([]);
 
     // Calendario
     const [heatmap, setHeatmap] = useState<any>({});
@@ -541,7 +544,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     if (view === 'voting_room') {
         return (
             <div className="relative h-full bg-[#F8F5F2] p-6 pb-32 overflow-y-auto">
-                {winnerData && (<div className="fixed inset-0 z-[6000] bg-[#1B4332] flex flex-col items-center justify-center p-6 animate-enter text-white"><div className="w-32 h-32 bg-white/10 rounded-full flex items-center justify-center mb-8 animate-bounce"><Trophy size={64} className="text-[#D08C60]" /></div><h2 className="text-xl font-bold uppercase tracking-widest text-[#A7D7C5] mb-2">¡Habemus Destinum!</h2><h1 className="text-6xl serif-font mb-4 text-center leading-tight">{winnerData}</h1><p className="text-white/60 mb-12 max-w-xs text-center">La democracia ha hablado. Preparad las maletas.</p><button onClick={() => { setWinnerData(null); setView('dashboard'); }} className="px-10 py-4 bg-white text-[#1B4332] rounded-full font-bold text-lg hover:scale-105 transition-transform shadow-2xl">Ir al Mapa</button></div>)}
+                {winnerData && (<div className="fixed inset-0 z-[6000] bg-[#1B4332] flex flex-col items-center justify-center p-6 animate-enter text-white"><div className="w-32 h-32 bg-white/10 rounded-full flex items-center justify-center mb-8 animate-bounce"><Trophy size={64} className="text-[#D08C60]" /></div><h2 className="text-xl font-bold uppercase tracking-widest text-[#A7D7C5] mb-2">¡Habemus Destinum!</h2><h1 className="text-6xl serif-font mb-4 text-center leading-tight">{winnerData}</h1><p className="text-white/60 mb-12 max-w-xs text-center">La democracia ha hablado. Preparad las maletas.</p><button onClick={() => { setWinnerData(null); setView('seasonality_dashboard'); }} className="px-10 py-4 bg-white text-[#1B4332] rounded-full font-bold text-lg hover:scale-105 transition-transform shadow-2xl flex items-center gap-2"><Calendar size={24} /> Planificar Fechas</button></div>)}
 
                 <div className="flex justify-between items-center mb-8">
                     <div><button onClick={() => setView('dashboard')} className="flex items-center gap-2 text-[#78716C] mb-2 font-medium hover:text-[#1B4332]"><ArrowRight className="rotate-180" size={16} /> Volver al Panel</button><h1 className="text-3xl serif-font text-[#1B4332]">Sistema de Votación</h1><p className="text-sm text-[#78716C]">Arrastra para ordenar tus preferencias (1º = más puntos).</p></div>
@@ -689,7 +692,170 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         );
     }
 
-    // 4. MAIN DASHBOARD (MAPA + WALLET)
+    // 4. SEASONALITY DASHBOARD
+    if (view === 'seasonality_dashboard') {
+        const months = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+        const recommendedMonths = [4, 5]; // Mayo y Junio (0-indexed)
+
+        const toggleMonth = (monthIndex: number) => {
+            if (selectedMonths.includes(monthIndex)) {
+                setSelectedMonths(selectedMonths.filter(m => m !== monthIndex));
+            } else {
+                setSelectedMonths([...selectedMonths, monthIndex]);
+            }
+        };
+
+        return (
+            <div className="relative h-full bg-[#F8F5F2] p-6 pb-32 overflow-y-auto">
+                {/* Header */}
+                <div className="mb-8 text-center animate-enter">
+                    <button onClick={() => setView('dashboard')} className="flex items-center gap-2 text-[#78716C] mb-4 font-medium hover:text-[#1B4332] mx-auto">
+                        <ArrowRight className="rotate-180" size={16} /> Volver
+                    </button>
+                    <h1 className="text-4xl serif-font text-[#1B4332] mb-2">
+                        ¡Nos vamos a {user?.destino?.replace('PENDIENTE: ', '')}! 🌍
+                    </h1>
+                    <p className="text-[#78716C] flex items-center justify-center gap-2">
+                        <Loader2 size={16} className="animate-spin" />
+                        Analizando la mejor época para viajar...
+                    </p>
+                </div>
+
+                {/* Seasonality Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8 max-w-4xl mx-auto">
+                    {/* Clima Card */}
+                    <div className="bg-white rounded-[24px] p-6 border border-[#E7E5E4] shadow-sm">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="w-12 h-12 rounded-full bg-[#FFF7ED] flex items-center justify-center">
+                                <Sun size={24} className="text-[#C2410C]" />
+                            </div>
+                            <h3 className="text-lg font-bold text-[#1B4332]">Clima</h3>
+                        </div>
+                        <div className="space-y-2">
+                            <div className="flex justify-between items-center">
+                                <span className="text-sm text-[#78716C]">Temperatura óptima</span>
+                                <span className="text-sm font-bold text-[#1B4332]">20-25°C</span>
+                            </div>
+                            <div className="h-2 bg-[#F8F5F2] rounded-full overflow-hidden">
+                                <div className="h-full bg-gradient-to-r from-[#FFF7ED] via-[#FFEDD5] to-[#FFF7ED] w-[60%]" style={{ marginLeft: '33%' }}></div>
+                            </div>
+                            <p className="text-xs text-[#78716C] mt-2">Mejor: Mayo - Junio</p>
+                        </div>
+                    </div>
+
+                    {/* Precios Card */}
+                    <div className="bg-white rounded-[24px] p-6 border border-[#E7E5E4] shadow-sm">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="w-12 h-12 rounded-full bg-[#F0FDF4] flex items-center justify-center">
+                                <DollarSign size={24} className="text-[#166534]" />
+                            </div>
+                            <h3 className="text-lg font-bold text-[#1B4332]">Precios</h3>
+                        </div>
+                        <div className="space-y-2">
+                            <div className="flex justify-between items-center">
+                                <span className="text-sm text-[#78716C]">Ahorro estimado</span>
+                                <span className="text-sm font-bold text-[#166534]">-35%</span>
+                            </div>
+                            <div className="h-2 bg-[#F8F5F2] rounded-full overflow-hidden">
+                                <div className="h-full bg-gradient-to-r from-[#F0FDF4] via-[#DCFCE7] to-[#F0FDF4] w-[50%]" style={{ marginLeft: '40%' }}></div>
+                            </div>
+                            <p className="text-xs text-[#78716C] mt-2">Económico: Mayo - Junio</p>
+                        </div>
+                    </div>
+
+                    {/* Multitudes Card */}
+                    <div className="bg-white rounded-[24px] p-6 border border-[#E7E5E4] shadow-sm">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="w-12 h-12 rounded-full bg-[#EFF6FF] flex items-center justify-center">
+                                <Users size={24} className="text-[#1E40AF]" />
+                            </div>
+                            <h3 className="text-lg font-bold text-[#1B4332]">Multitudes</h3>
+                        </div>
+                        <div className="space-y-2">
+                            <div className="flex justify-between items-center">
+                                <span className="text-sm text-[#78716C]">Afluencia turística</span>
+                                <span className="text-sm font-bold text-[#1E40AF]">Media-Baja</span>
+                            </div>
+                            <div className="h-2 bg-[#F8F5F2] rounded-full overflow-hidden">
+                                <div className="h-full bg-gradient-to-r from-[#EFF6FF] via-[#DBEAFE] to-[#EFF6FF] w-[45%]" style={{ marginLeft: '38%' }}></div>
+                            </div>
+                            <p className="text-xs text-[#78716C] mt-2">Tranquilo: Mayo - Junio</p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Month Selector */}
+                <div className="max-w-4xl mx-auto bg-white rounded-[24px] p-8 border border-[#E7E5E4] shadow-sm mb-6">
+                    <div className="mb-6">
+                        <h2 className="text-2xl serif-font text-[#1B4332] mb-2">Selecciona los meses posibles</h2>
+                        <p className="text-sm text-[#78716C]">Marca los meses en los que el grupo podría viajar</p>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                        {months.map((month, index) => {
+                            const isRecommended = recommendedMonths.includes(index);
+                            const isSelected = selectedMonths.includes(index);
+
+                            return (
+                                <button
+                                    key={index}
+                                    onClick={() => toggleMonth(index)}
+                                    className={`
+                                        relative p-4 rounded-xl border-2 transition-all
+                                        ${isSelected
+                                            ? 'bg-[#1B4332] border-[#1B4332] text-white shadow-lg scale-105'
+                                            : isRecommended
+                                                ? 'bg-[#E8F5E9] border-[#40916C] text-[#1B4332] hover:bg-[#DCFCE7]'
+                                                : 'bg-white border-[#E7E5E4] text-[#78716C] hover:border-[#1B4332]'
+                                        }
+                                    `}
+                                >
+                                    {isRecommended && !isSelected && (
+                                        <div className="absolute -top-2 -right-2 w-5 h-5 bg-[#40916C] rounded-full flex items-center justify-center">
+                                            <Star size={12} className="text-white fill-white" />
+                                        </div>
+                                    )}
+                                    <span className="font-bold text-sm">{month}</span>
+                                    {isSelected && (
+                                        <Check size={16} className="absolute top-1 right-1" />
+                                    )}
+                                </button>
+                            );
+                        })}
+                    </div>
+
+                    {selectedMonths.length > 0 && (
+                        <div className="mt-4 p-4 bg-[#F0FDF4] rounded-xl border border-[#DCFCE7]">
+                            <p className="text-sm text-[#166534]">
+                                ✓ {selectedMonths.length} {selectedMonths.length === 1 ? 'mes seleccionado' : 'meses seleccionados'}
+                            </p>
+                        </div>
+                    )}
+                </div>
+
+                {/* Action Button */}
+                <div className="fixed bottom-6 inset-x-6 z-[100] max-w-4xl mx-auto">
+                    <button
+                        onClick={() => setView('calendar_room')}
+                        disabled={selectedMonths.length === 0}
+                        className={`
+                            w-full py-5 rounded-xl font-bold text-lg shadow-2xl flex items-center justify-center gap-3 transition-all
+                            ${selectedMonths.length === 0
+                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                : 'bg-[#1B4332] text-white hover:bg-[#2D6A4F] hover:scale-[1.02]'
+                            }
+                        `}
+                    >
+                        <Calendar size={24} />
+                        Siguiente: Ver Disponibilidad del Grupo
+                        <ArrowRight size={24} />
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    // 5. MAIN DASHBOARD (MAPA + WALLET)
     return (
         <div className="relative h-full bg-[#F8F5F2]">
             <div className={`p-6 space-y-6 pb-32 overflow-y-auto h-full no-scrollbar transition-all duration-500 ${isWalletOpen ? 'opacity-50 blur-[2px]' : ''}`}>
