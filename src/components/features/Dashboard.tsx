@@ -235,6 +235,28 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     const refreshCandidates = async () => {
         if (!user) return;
+
+        // CONSULTAR ESTADO DEL VIAJE PARA DETECTAR GANADOR
+        try {
+            const viajeRes = await fetch(`http://localhost:3005/api/viaje/estado?viajeId=${user.viajeId}`);
+            const viajeData = await viajeRes.json();
+
+            // Si el destino cambió en el servidor, actualizar usuario local
+            if (viajeData.destino && viajeData.destino !== user.destino) {
+                const updatedUser = { ...user, destino: viajeData.destino };
+                setUser(updatedUser);
+                localStorage.setItem('travelSphereUser', JSON.stringify(updatedUser));
+
+                // Si ya no es PENDIENTE, mostrar ganador
+                if (!viajeData.destino.startsWith("PENDIENTE")) {
+                    setWinnerData(viajeData.destino);
+                    fetchCityCoords(viajeData.destino);
+                }
+            }
+        } catch (e) {
+            console.error("Error checking trip status:", e);
+        }
+
         const res = await fetch(`http://localhost:3005/api/voting/candidaturas?viajeId=${user.viajeId}&usuarioId=${user.id}`);
         const data = await res.json();
 
@@ -245,10 +267,6 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
             setCandidaturas(serverCands);
         }
         setHasVoted(data.yaVoto);
-
-        if (!user.destino.startsWith("PENDIENTE") && !winnerData) {
-            setWinnerData(user.destino);
-        }
 
         // 2. AQUÍ ESTABA EL FALLO: Sincronización del Ranking Visual
         if (!data.yaVoto) {
@@ -357,18 +375,33 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         if (candidaturas.length === 0) return showAlert("¡No hay candidaturas!");
 
         showConfirm("Esta acción cerrará la votación para siempre. ¿Proceder?", async () => {
+            setAlertConfig(null);
+
+            // Mostrar feedback inmediato
+            showAlert("Cerrando votación...");
+
             try {
                 const res = await fetch('http://localhost:3005/api/voting/cerrar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId }) });
                 const data = await res.json();
-                setAlertConfig(null);
+
                 if (data.success) {
-                    setWinnerData(data.nuevoDestino);
-                    const newUser = { ...user, destino: data.nuevoDestino };
-                    setUser(newUser);
-                    localStorage.setItem('travelSphereUser', JSON.stringify(newUser));
-                    fetchCityCoords(data.nuevoDestino);
-                } else { showAlert("Error: " + data.error); }
-            } catch (e) { showAlert("Error de conexión."); }
+                    // Esperar 1 segundo antes de mostrar ganador
+                    setTimeout(() => {
+                        setAlertConfig(null);
+                        setWinnerData(data.nuevoDestino);
+                        const newUser = { ...user, destino: data.nuevoDestino };
+                        setUser(newUser);
+                        localStorage.setItem('travelSphereUser', JSON.stringify(newUser));
+                        fetchCityCoords(data.nuevoDestino);
+                    }, 1000);
+                } else {
+                    setAlertConfig(null);
+                    showAlert("Error: " + data.error);
+                }
+            } catch (e) {
+                setAlertConfig(null);
+                showAlert("Error de conexión.");
+            }
         });
     };
 

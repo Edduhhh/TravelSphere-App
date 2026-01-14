@@ -114,6 +114,14 @@ app.post('/api/lobby/unirse', (req, res) => {
     res.json({ success: true, viajeId: viaje.id, userId: nuevoUser.lastInsertRowid, destino: viaje.destino, fechas: { inicio: viaje.fecha_inicio, fin: viaje.fecha_fin } });
 });
 
+// --- CONSULTAR ESTADO DEL VIAJE ---
+app.get('/api/viaje/estado', (req, res) => {
+    const { viajeId } = req.query;
+    const viaje = db.prepare('SELECT destino FROM viajes WHERE id = ?').get(viajeId);
+    if (!viaje) return res.status(404).json({ error: "Viaje no encontrado" });
+    res.json({ destino: viaje.destino });
+});
+
 // --- GESTIÓN DE ROLES ---
 app.get('/api/roles/lista', (req, res) => {
     const { viajeId } = req.query;
