@@ -17,7 +17,8 @@ db.exec(`
     codigo TEXT UNIQUE, 
     destino TEXT, 
     fecha_inicio TEXT, 
-    fecha_fin TEXT, 
+    fecha_fin TEXT,
+    selected_months TEXT,
     fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP
   );
   
@@ -56,7 +57,14 @@ db.exec(`
     posicion INTEGER,
     UNIQUE(viaje_id, usuario_id, candidatura_id)
   );
-  CREATE TABLE IF NOT EXISTS disponibilidad (id INTEGER PRIMARY KEY, viaje_id INTEGER, usuario_id INTEGER, fecha TEXT, UNIQUE(usuario_id, fecha));
+  CREATE TABLE IF NOT EXISTS disponibilidad (
+    id INTEGER PRIMARY KEY, 
+    viaje_id INTEGER, 
+    usuario_id INTEGER, 
+    fecha TEXT,
+    estado TEXT DEFAULT 'ideal',
+    UNIQUE(usuario_id, fecha)
+  );
 `);
 
 const app = express();
@@ -114,12 +122,25 @@ app.post('/api/lobby/unirse', (req, res) => {
     res.json({ success: true, viajeId: viaje.id, userId: nuevoUser.lastInsertRowid, destino: viaje.destino, fechas: { inicio: viaje.fecha_inicio, fin: viaje.fecha_fin } });
 });
 
-// --- CONSULTAR ESTADO DEL VIAJE ---
+// --- CONSULTAR ESTADO DEL VIAJE (CON FECHA FINAL) ---
 app.get('/api/viaje/estado', (req, res) => {
     const { viajeId } = req.query;
-    const viaje = db.prepare('SELECT destino FROM viajes WHERE id = ?').get(viajeId);
+    const viaje = db.prepare('SELECT destino, fecha_inicio, fecha_fin, fecha_final FROM viajes WHERE id = ?').get(viajeId);
     if (!viaje) return res.status(404).json({ error: "Viaje no encontrado" });
-    res.json({ destino: viaje.destino });
+
+    // Parse fecha_final if exists (stored as "startDate|endDate")
+    let fechaFinal = null;
+    if (viaje.fecha_final) {
+        const [start, end] = viaje.fecha_final.split('|');
+        fechaFinal = { inicio: start, fin: end };
+    }
+
+    res.json({
+        destino: viaje.destino,
+        fechaInicio: viaje.fecha_inicio,
+        fechaFin: viaje.fecha_fin,
+        fechaFinal: fechaFinal
+    });
 });
 
 // --- GESTIÓN DE ROLES ---
@@ -329,6 +350,268 @@ app.post('/api/calendar/fijar', (req, res) => {
     const { viajeId, fechaInicio, fechaFin } = req.body;
     db.prepare('UPDATE viajes SET fecha_inicio = ?, fecha_fin = ? WHERE id = ?').run(fechaInicio, fechaFin, viajeId);
     res.json({ success: true });
+});
+
+// --- SELECTED MONTHS (ADMIN ONLY) ---
+app.post('/api/months/save', (req, res) => {
+    const { viajeId, selectedMonths } = req.body;
+    console.log('📅 Recibiendo solicitud para guardar meses:', { viajeId, selectedMonths });
+
+    try {
+        // Primero, verificar si la columna existe y añadirla si no
+        try {
+            db.prepare("ALTER TABLE viajes ADD COLUMN selected_months TEXT").run();
+            console.log('✅ Columna selected_months añadida a la tabla viajes');
+        } catch (alterError) {
+            // La columna ya existe, ignorar el error
+            if (!alterError.message.includes('duplicate column')) {
+                console.log('ℹ️ Columna selected_months ya existe (esperado)');
+            }
+        }
+
+        const monthsJson = JSON.stringify(selectedMonths);
+        console.log('💾 Guardando meses como JSON:', monthsJson);
+
+        const result = db.prepare('UPDATE viajes SET selected_months = ? WHERE id = ?').run(monthsJson, viajeId);
+        console.log('✅ UPDATE ejecutado. Filas afectadas:', result.changes);
+
+        res.json({ success: true, changes: result.changes });
+    } catch (e) {
+        console.error('❌ ERROR guardando meses:', e.message);
+        console.error('Stack:', e.stack);
+        res.status(500).json({ error: 'Error guardando meses', details: e.message });
+    }
+});
+
+app.get('/api/months/get', (req, res) => {
+    const { viajeId } = req.query;
+    try {
+        const viaje = db.prepare('SELECT selected_months FROM viajes WHERE id = ?').get(viajeId);
+        if (!viaje || !viaje.selected_months) {
+            return res.json({ selectedMonths: null });
+        }
+        res.json({ selectedMonths: JSON.parse(viaje.selected_months) });
+    } catch (e) {
+        res.status(500).json({ error: 'Error obteniendo meses' });
+    }
+});
+
+// --- AVAILABILITY WITH STATES (SEMÁFORO) ---
+app.post('/api/availability/save', (req, res) => {
+    const { viajeId, usuarioId, availability } = req.body;
+    console.log('🎨 Recibiendo disponibilidad:', { viajeId, usuarioId, numDias: Object.keys(availability).length });
+
+    try {
+        // Primero, verificar si la columna estado existe y añadirla si no
+        try {
+            db.prepare("ALTER TABLE disponibilidad ADD COLUMN estado TEXT DEFAULT 'ideal'").run();
+            console.log('✅ Columna estado añadida a disponibilidad');
+        } catch (alterError) {
+            // La columna ya existe, ignorar
+            if (!alterError.message.includes('duplicate column')) {
+                console.log('ℹ️ Columna estado ya existe (esperado)');
+            }
+        }
+
+        // Primero borramos todas las disponibilidades anteriores de este usuario
+        const deleteResult = db.prepare('DELETE FROM disponibilidad WHERE usuario_id = ? AND viaje_id = ?').run(usuarioId, viajeId);
+        console.log(`🗑️ Borradas ${deleteResult.changes} disponibilidades anteriores`);
+
+        // Insertamos las nuevas
+        const insertStmt = db.prepare('INSERT INTO disponibilidad (viaje_id, usuario_id, fecha, estado) VALUES (?, ?, ?, ?)');
+
+        const tx = db.transaction(() => {
+            for (const [fecha, estado] of Object.entries(availability)) {
+                insertStmt.run(viajeId, usuarioId, fecha, estado);
+            }
+        });
+
+        tx();
+        console.log(`✅ Guardadas ${Object.keys(availability).length} fechas con estados`);
+        res.json({ success: true, count: Object.keys(availability).length });
+    } catch (e) {
+        console.error('❌ ERROR guardando disponibilidad:', e.message);
+        console.error('Stack:', e.stack);
+        res.status(500).json({ error: 'Error guardando disponibilidad', details: e.message });
+    }
+});
+
+app.get('/api/availability/get', (req, res) => {
+    const { viajeId, usuarioId } = req.query;
+
+    try {
+        const rows = db.prepare('SELECT fecha, estado FROM disponibilidad WHERE viaje_id = ? AND usuario_id = ?').all(viajeId, usuarioId);
+
+        const availability = {};
+        rows.forEach(r => {
+            availability[r.fecha] = r.estado;
+        });
+
+        res.json({ availability });
+    } catch (e) {
+        res.status(500).json({ error: 'Error obteniendo disponibilidad' });
+    }
+});
+
+// --- CALENDAR ANALYSIS (CONSENSUS) - STRICT SYNC ---
+app.get('/api/calendar/analyze', (req, res) => {
+    const { viajeId, tripDuration } = req.query;
+    const duration = parseInt(tripDuration) || 4;
+
+    console.log('🧠 Analizando consenso del grupo:', { viajeId, duration });
+
+    try {
+        // Obtener TODOS los usuarios del viaje
+        const allUsers = db.prepare('SELECT id, nombre FROM usuarios WHERE viaje_id = ?').all(viajeId);
+        const totalUsers = allUsers.length;
+
+        // Obtener usuarios que YA han pintado fechas (con disponibilidad guardada)
+        const usersWithAvailability = db.prepare('SELECT DISTINCT usuario_id FROM disponibilidad WHERE viaje_id = ?').all(viajeId);
+        const confirmedUserIds = usersWithAvailability.map(u => u.usuario_id);
+        const submittedCount = confirmedUserIds.length;
+
+        // Identificar usuarios PENDIENTES
+        const pendingUsers = allUsers.filter(u => !confirmedUserIds.includes(u.id)).map(u => u.nombre);
+
+        console.log(`👥 Progreso ESTRICTO: ${submittedCount}/${totalUsers} confirmados`);
+        console.log(`⏳ Pendientes: ${pendingUsers.join(', ') || 'Ninguno'}`);
+
+        // 🔒 STRICT CHECK: SI NO HAN CONFIRMADO TODOS, BLOQUEAR
+        if (submittedCount < totalUsers) {
+            return res.json({
+                status: 'waiting',
+                progress: { submitted: submittedCount, total: totalUsers },
+                pendingUsers: pendingUsers,
+                message: `Esperando a que ${pendingUsers.length === 1 ? pendingUsers[0] + ' confirme' : pendingUsers.length + ' personas confirmen'}...`
+            });
+        }
+
+        // ✅ TODOS HAN CONFIRMADO - Proceder con análisis
+        console.log('✅ TODOS confirmados - Calculando opciones...');
+
+        // Obtener TODAS las disponibilidades con estados
+        const allAvailability = db.prepare(`
+            SELECT d.fecha, d.estado, d.usuario_id, u.nombre 
+            FROM disponibilidad d
+            JOIN usuarios u ON d.usuario_id = u.id
+            WHERE d.viaje_id = ?
+            ORDER BY d.fecha ASC
+        `).all(viajeId);
+
+        // Agrupar por fecha
+        const dateMap = {};
+        allAvailability.forEach(row => {
+            if (!dateMap[row.fecha]) {
+                dateMap[row.fecha] = { ideal: [], flexible: [], busy: [] };
+            }
+            dateMap[row.fecha][row.estado].push({ id: row.usuario_id, nombre: row.nombre });
+        });
+
+        // Crear lista de fechas ordenadas
+        const dates = Object.keys(dateMap).sort();
+
+        if (dates.length < duration) {
+            return res.json({
+                status: 'insufficient_data',
+                progress: { submitted: submittedCount, total: totalUsers },
+                message: 'No hay suficientes fechas marcadas para formar un rango'
+            });
+        }
+
+        // Calcular mejores rangos usando ventana deslizante
+        const options = [];
+
+        for (let i = 0; i <= dates.length - duration; i++) {
+            const window = dates.slice(i, i + duration);
+
+            // Verificar que sea un rango continuo (días consecutivos)
+            const startDate = new Date(window[0]);
+            const endDate = new Date(window[window.length - 1]);
+            const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+
+            if (daysDiff !== duration) continue; // No es continuo, saltar
+
+            // Calcular scores
+            let idealScore = 0;
+            let flexibleScore = 0;
+            let totalUsers = 0;
+            const participatingUsers = new Set();
+
+            window.forEach(date => {
+                const data = dateMap[date];
+                idealScore += data.ideal.length * 3; // Ideal = 3 puntos
+                flexibleScore += data.flexible.length * 1.5; // Flexible = 1.5 puntos
+                // Busy = 0 puntos
+
+                data.ideal.forEach(u => participatingUsers.add(u.nombre));
+                data.flexible.forEach(u => participatingUsers.add(u.nombre));
+            });
+
+            totalUsers = participatingUsers.size;
+            const balanceScore = idealScore + flexibleScore;
+
+            options.push({
+                startDate: window[0],
+                endDate: window[window.length - 1],
+                dates: window,
+                idealScore,
+                flexibleScore,
+                balanceScore,
+                users: Array.from(participatingUsers),
+                userCount: totalUsers
+            });
+        }
+
+        // Ordenar y seleccionar top 3
+        const popular = [...options].sort((a, b) => b.idealScore - a.idealScore)[0];
+        const economic = [...options].sort((a, b) => b.flexibleScore - a.flexibleScore)[0];
+        const balance = [...options].sort((a, b) => b.balanceScore - a.balanceScore)[0];
+
+        console.log('✅ Top 3 opciones calculadas');
+
+        res.json({
+            status: 'ready',
+            progress: { submitted: submittedCount, total: totalUsers },
+            options: {
+                popular: popular || null,
+                economic: economic || null,
+                balance: balance || null
+            }
+        });
+    } catch (e) {
+        console.error('❌ ERROR en análisis:', e.message);
+        res.status(500).json({ error: 'Error analizando disponibilidad' });
+    }
+});
+
+// --- TRIP FINALIZATION (SAVE CHOSEN DATE) ---
+app.post('/api/trip/finalize', (req, res) => {
+    const { viajeId, startDate, endDate } = req.body;
+    console.log('🎯 Finalizando viaje con fecha:', { viajeId, startDate, endDate });
+
+    try {
+        // Ensure fecha_final column exists
+        try {
+            db.prepare("ALTER TABLE viajes ADD COLUMN fecha_final TEXT").run();
+            console.log('✅ Columna fecha_final añadida');
+        } catch (alterError) {
+            // Column already exists
+            if (!alterError.message.includes('duplicate column')) {
+                console.log('ℹ️ Columna fecha_final ya existe');
+            }
+        }
+
+        // Save chosen date range
+        const finalDate = `${startDate}|${endDate}`; // Store as pipe-separated
+        const result = db.prepare('UPDATE viajes SET fecha_inicio = ?, fecha_fin = ?, fecha_final = ? WHERE id = ?')
+            .run(startDate, endDate, finalDate, viajeId);
+
+        console.log('✅ Fecha final guardada. Filas afectadas:', result.changes);
+        res.json({ success: true, changes: result.changes });
+    } catch (e) {
+        console.error('❌ ERROR finalizando viaje:', e.message);
+        res.status(500).json({ error: 'Error guardando fecha final', details: e.message });
+    }
 });
 
 // --- WALLET ---

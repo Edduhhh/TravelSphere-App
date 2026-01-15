@@ -3,6 +3,9 @@ import { Wallet, Search, X, Plus, User, LogIn, LogOut, Target, MapPin, ArrowRigh
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
+import { GroupAvailability } from './GroupAvailability';
+import { ConsensusView } from './ConsensusView';
+import { TripSummary } from './TripSummary';
 
 // DND-KIT IMPORTS
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, TouchSensor } from '@dnd-kit/core';
@@ -77,7 +80,7 @@ const CustomAlert = ({ type, message, onConfirm, onCancel }: any) => {
 
 export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any) => {
     // --- ESTADOS ---
-    const [view, setView] = useState<'lobby' | 'dashboard' | 'voting_room' | 'calendar_room' | 'seasonality_dashboard'>('lobby');
+    const [view, setView] = useState<'lobby' | 'dashboard' | 'voting_room' | 'calendar_room' | 'seasonality_dashboard' | 'group_availability' | 'consensus_view' | 'trip_summary'>('lobby');
     const [user, setUser] = useState<any>(null);
 
     // Lobby
@@ -110,6 +113,11 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     // Seasonality Dashboard
     const [selectedMonths, setSelectedMonths] = useState<number[]>([]);
+    const [isLoadingMonths, setIsLoadingMonths] = useState(false);
+
+    // Trip Final Dates (for TripSummary)
+    const [finalStartDate, setFinalStartDate] = useState<string>('');
+    const [finalEndDate, setFinalEndDate] = useState<string>('');
 
     // Calendario
     const [heatmap, setHeatmap] = useState<any>({});
@@ -510,6 +518,53 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     useEffect(() => { if ((view === 'dashboard' || view === 'calendar_room') && isWalletOpen) refreshWallet(); }, [isWalletOpen, view]);
 
+    // Auto-load months when entering seasonality_dashboard
+    useEffect(() => {
+        if (view === 'seasonality_dashboard' && user) {
+            const loadMonths = async () => {
+                setIsLoadingMonths(true);
+                try {
+                    const res = await fetch(`http://localhost:3005/api/months/get?viajeId=${user.viajeId}`);
+                    const data = await res.json();
+
+                    if (data.selectedMonths && data.selectedMonths.length > 0) {
+                        setSelectedMonths(data.selectedMonths);
+
+                        // Si NO es admin, redirigir automáticamente a group_availability
+                        if (!user.esAdmin) {
+                            setTimeout(() => setView('group_availability'), 800);
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error cargando meses:', e);
+                } finally {
+                    setIsLoadingMonths(false);
+                }
+            };
+            loadMonths();
+        }
+    }, [view, user]);
+
+    // Load final dates when entering trip_summary
+    useEffect(() => {
+        if (view === 'trip_summary' && user) {
+            const loadFinalDates = async () => {
+                try {
+                    const res = await fetch(`http://localhost:3005/api/viaje/estado?viajeId=${user.viajeId}`);
+                    const data = await res.json();
+
+                    if (data.fechaFinal) {
+                        setFinalStartDate(data.fechaFinal.inicio);
+                        setFinalEndDate(data.fechaFinal.fin);
+                    }
+                } catch (e) {
+                    console.error('Error cargando fechas finales:', e);
+                }
+            };
+            loadFinalDates();
+        }
+    }, [view, user]);
+
     const ejecutarAccion = async () => {
         if (!inputValue) return;
         const monto = Number(inputValue);
@@ -787,42 +842,64 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                 {/* Month Selector */}
                 <div className="max-w-4xl mx-auto bg-white rounded-[24px] p-8 border border-[#E7E5E4] shadow-sm mb-6">
                     <div className="mb-6">
-                        <h2 className="text-2xl serif-font text-[#1B4332] mb-2">Selecciona los meses posibles</h2>
-                        <p className="text-sm text-[#78716C]">Marca los meses en los que el grupo podría viajar</p>
+                        <h2 className="text-2xl serif-font text-[#1B4332] mb-2">
+                            {user?.esAdmin ? 'Selecciona los meses posibles' : 'Meses disponibles'}
+                        </h2>
+                        <p className="text-sm text-[#78716C]">
+                            {user?.esAdmin
+                                ? 'Marca los meses en los que el grupo podría viajar'
+                                : 'El organizador ha seleccionado estos meses para el viaje'}
+                        </p>
                     </div>
 
-                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                        {months.map((month, index) => {
-                            const isRecommended = recommendedMonths.includes(index);
-                            const isSelected = selectedMonths.includes(index);
+                    {/* Mensaje de espera para usuarios NO admin */}
+                    {!user?.esAdmin && selectedMonths.length === 0 && !isLoadingMonths && (
+                        <div className="text-center py-16 animate-enter">
+                            <div className="w-20 h-20 bg-amber-50 rounded-full flex items-center justify-center mx-auto mb-6">
+                                <Clock size={40} className="text-amber-600" />
+                            </div>
+                            <h3 className="text-xl serif-font text-[#1B4332] mb-2">Esperando al Organizador...</h3>
+                            <p className="text-sm text-[#78716C] max-w-md mx-auto">
+                                El administrador aún no ha seleccionado los meses disponibles para el viaje.
+                                Recibirás notificación cuando esté listo.
+                            </p>
+                        </div>
+                    )}
 
-                            return (
-                                <button
-                                    key={index}
-                                    onClick={() => toggleMonth(index)}
-                                    className={`
+                    {(user?.esAdmin || selectedMonths.length > 0) && (
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                            {months.map((month, index) => {
+                                const isRecommended = recommendedMonths.includes(index);
+                                const isSelected = selectedMonths.includes(index);
+
+                                return (
+                                    <button
+                                        key={index}
+                                        onClick={() => toggleMonth(index)}
+                                        className={`
                                         relative p-4 rounded-xl border-2 transition-all
                                         ${isSelected
-                                            ? 'bg-[#1B4332] border-[#1B4332] text-white shadow-lg scale-105'
-                                            : isRecommended
-                                                ? 'bg-[#E8F5E9] border-[#40916C] text-[#1B4332] hover:bg-[#DCFCE7]'
-                                                : 'bg-white border-[#E7E5E4] text-[#78716C] hover:border-[#1B4332]'
-                                        }
+                                                ? 'bg-[#1B4332] border-[#1B4332] text-white shadow-lg scale-105'
+                                                : isRecommended
+                                                    ? 'bg-[#E8F5E9] border-[#40916C] text-[#1B4332] hover:bg-[#DCFCE7]'
+                                                    : 'bg-white border-[#E7E5E4] text-[#78716C] hover:border-[#1B4332]'
+                                            }
                                     `}
-                                >
-                                    {isRecommended && !isSelected && (
-                                        <div className="absolute -top-2 -right-2 w-5 h-5 bg-[#40916C] rounded-full flex items-center justify-center">
-                                            <Star size={12} className="text-white fill-white" />
-                                        </div>
-                                    )}
-                                    <span className="font-bold text-sm">{month}</span>
-                                    {isSelected && (
-                                        <Check size={16} className="absolute top-1 right-1" />
-                                    )}
-                                </button>
-                            );
-                        })}
-                    </div>
+                                    >
+                                        {isRecommended && !isSelected && (
+                                            <div className="absolute -top-2 -right-2 w-5 h-5 bg-[#40916C] rounded-full flex items-center justify-center">
+                                                <Star size={12} className="text-white fill-white" />
+                                            </div>
+                                        )}
+                                        <span className="font-bold text-sm">{month}</span>
+                                        {isSelected && (
+                                            <Check size={16} className="absolute top-1 right-1" />
+                                        )}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
 
                     {selectedMonths.length > 0 && (
                         <div className="mt-4 p-4 bg-[#F0FDF4] rounded-xl border border-[#DCFCE7]">
@@ -836,7 +913,30 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                 {/* Action Button */}
                 <div className="fixed bottom-6 inset-x-6 z-[100] max-w-4xl mx-auto">
                     <button
-                        onClick={() => setView('calendar_room')}
+                        onClick={async () => {
+                            if (!user) return;
+                            if (user.esAdmin) {
+                                // Admin: Guardar meses en el servidor
+                                try {
+                                    const res = await fetch('http://localhost:3005/api/months/save', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ viajeId: user.viajeId, selectedMonths })
+                                    });
+                                    const data = await res.json();
+                                    if (data.success) {
+                                        setView('group_availability');
+                                    } else {
+                                        alert('Error guardando meses');
+                                    }
+                                } catch (e) {
+                                    alert('Error de conexión');
+                                }
+                            } else {
+                                // Usuario: Cargar meses del admin
+                                setView('group_availability');
+                            }
+                        }}
                         disabled={selectedMonths.length === 0}
                         className={`
                             w-full py-5 rounded-xl font-bold text-lg shadow-2xl flex items-center justify-center gap-3 transition-all
@@ -847,7 +947,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                         `}
                     >
                         <Calendar size={24} />
-                        Siguiente: Ver Disponibilidad del Grupo
+                        Siguiente: Marcar mi Disponibilidad
                         <ArrowRight size={24} />
                     </button>
                 </div>
@@ -855,7 +955,55 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         );
     }
 
-    // 5. MAIN DASHBOARD (MAPA + WALLET)
+    // 5. GROUP AVAILABILITY (SEMÁFORO)
+    if (view === 'group_availability') {
+        return (
+            <GroupAvailability
+                selectedMonths={selectedMonths}
+                tripDuration={tripDuration}
+                viajeId={user.viajeId}
+                usuarioId={user.id}
+                onBack={() => setView('seasonality_dashboard')}
+                onComplete={() => setView('consensus_view')}
+            />
+        );
+    }
+
+    // 6. CONSENSUS VIEW (CEREBRO DE DECISIÓN)
+    if (view === 'consensus_view') {
+        return (
+            <ConsensusView
+                viajeId={user.viajeId}
+                tripDuration={tripDuration}
+                isAdmin={user.esAdmin}
+                onBack={() => setView('group_availability')}
+                onVoteComplete={(selectedOption) => {
+                    console.log('Opción votada:', selectedOption);
+                    setView('trip_summary');
+                }}
+            />
+        );
+    }
+
+    // 7. TRIP SUMMARY (COUNTDOWN & FINAL HYPE)
+    if (view === 'trip_summary') {
+        const destino = user?.destino?.replace('PENDIENTE: ', '') || 'tu destino';
+
+        // Use real dates from state (loaded via useEffect)
+        const startDate = finalStartDate || '2026-05-15'; // Fallback
+        const endDate = finalEndDate || '2026-05-18'; // Fallback
+
+        return (
+            <TripSummary
+                destino={destino}
+                startDate={startDate}
+                endDate={endDate}
+                onGoToMap={() => setView('dashboard')}
+            />
+        );
+    }
+
+    // 8. MAIN DASHBOARD (MAPA + WALLET)
     return (
         <div className="relative h-full bg-[#F8F5F2]">
             <div className={`p-6 space-y-6 pb-32 overflow-y-auto h-full no-scrollbar transition-all duration-500 ${isWalletOpen ? 'opacity-50 blur-[2px]' : ''}`}>
