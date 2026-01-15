@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { Wallet, Search, X, Plus, User, LogIn, LogOut, Target, MapPin, ArrowRight, Compass, Users, Vote, Heart, Plane, Clock, Sun, Calendar, ChevronLeft, ChevronRight, Check, Trophy, ListOrdered, Star, AlertTriangle, Gavel, DollarSign, Hotel, Thermometer, Info, GripVertical, Map, BarChart3, PieChart, PlaneLanding, PlaneTakeoff, Settings, Timer, Loader2, Trash2 } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
-import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { GroupAvailability } from './GroupAvailability';
 import { ConsensusView } from './ConsensusView';
 import { TripSummary } from './TripSummary';
+import { SurvivalSession } from './SurvivalSession';
+import { DebugElimination } from './DebugElimination';
 
 // DND-KIT IMPORTS
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, TouchSensor } from '@dnd-kit/core';
@@ -80,8 +82,9 @@ const CustomAlert = ({ type, message, onConfirm, onCancel }: any) => {
 
 export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any) => {
     // --- ESTADOS ---
-    const [view, setView] = useState<'lobby' | 'dashboard' | 'voting_room' | 'calendar_room' | 'seasonality_dashboard' | 'group_availability' | 'consensus_view' | 'trip_summary'>('lobby');
+    const [view, setView] = useState<'lobby' | 'dashboard' | 'voting_room' | 'calendar_room' | 'seasonality_dashboard' | 'group_availability' | 'consensus_view' | 'trip_summary' | 'survival_session' | 'debug_elimination'>('lobby');
     const [user, setUser] = useState<any>(null);
+    const [showSurvival, setShowSurvival] = useState(false);
 
     // Lobby
     const [lobbyMode, setLobbyMode] = useState<'start' | 'create_choice' | 'create_fixed' | 'create_voting' | 'join'>('start');
@@ -1003,115 +1006,139 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         );
     }
 
-    // 8. MAIN DASHBOARD (MAPA + WALLET)
+    // 8. SURVIVAL SESSION (PORCOS BRAVOS)
+    if (view === 'survival_session') {
+        return <SurvivalSession />;
+    }
+
+    // 9. DEBUG ELIMINATION
+    if (view === 'debug_elimination') {
+        return <DebugElimination />;
+    }
+
+    // 10. MAIN DASHBOARD (MAPA + WALLET)
     return (
         <div className="relative h-full bg-[#F8F5F2]">
-            <div className={`p-6 space-y-6 pb-32 overflow-y-auto h-full no-scrollbar transition-all duration-500 ${isWalletOpen ? 'opacity-50 blur-[2px]' : ''}`}>
+            {/* 🐷 MODO SURVIVAL TOGGLE BUTTON - Floating Red Button */}
+            <button
+                onClick={() => setShowSurvival(!showSurvival)}
+                className="fixed top-6 right-6 z-[9999] bg-gradient-to-r from-red-600 to-red-700 text-white font-black text-lg px-6 py-4 rounded-full shadow-2xl hover:scale-105 transition-all flex items-center gap-2 border-4 border-red-500"
+            >
+                🐷 MODO SURVIVAL
+            </button>
 
-                {/* HEADER */}
-                <div className="flex justify-between items-center px-1">
-                    <div className="flex items-center gap-3 cursor-pointer group" onClick={onCityClick}>
-                        <div className="w-10 h-10 rounded-full bg-white border border-[#E7E5E4] flex items-center justify-center shadow-sm"><MapPin size={20} className="text-[#1B4332]" /></div>
-                        <div><h1 className="text-2xl serif-font text-[#1C1917]">{user?.destino?.replace('PENDIENTE: ', '') || currentCity}</h1><p className="text-[10px] font-bold text-[#78716C] tracking-widest uppercase mt-0.5">Código: <span className="text-[#D08C60]">{user?.viajeCodigo}</span></p></div>
-                    </div>
-                    <div className="flex gap-2">
-                        <button onClick={handleLogOut} className="w-10 h-10 bg-red-50 text-red-600 border border-red-100 rounded-full flex items-center justify-center shadow-sm hover:bg-red-100 transition-all group" title="Salir del viaje">
-                            <LogOut size={18} className="group-hover:scale-110 transition-transform" />
-                        </button>
-                        {user?.esAdmin ? (<button onClick={openRolesModal} className="w-10 h-10 bg-[#1B4332] text-white rounded-full flex items-center justify-center shadow-md hover:bg-[#2D6A4F] transition-colors"><Settings size={18} /></button>) : null}
-                        <div onClick={onParticipantsClick} className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full shadow-sm border border-[#E7E5E4] cursor-pointer"><div className="w-6 h-6 rounded-full bg-[#1B4332] text-white flex items-center justify-center text-xs font-serif">{user?.nombre.charAt(0)}</div><span className="text-xs font-medium text-[#78716C]">{user?.esAdmin ? 'Admin' : 'Guest'}</span></div>
-                    </div>
-                </div>
+            {/* Conditional Rendering: Survival Mode or Normal Dashboard */}
+            {showSurvival ? (
+                <SurvivalSession />
+            ) : (
+                <>
+                    <div className={`p-6 space-y-6 pb-32 overflow-y-auto h-full no-scrollbar transition-all duration-500 ${isWalletOpen ? 'opacity-50 blur-[2px]' : ''}`}>
+                        {/* HEADER */}
+                        <div className="flex justify-between items-center px-1">
+                            <div className="flex items-center gap-3 cursor-pointer group" onClick={onCityClick}>
+                                <div className="w-10 h-10 rounded-full bg-white border border-[#E7E5E4] flex items-center justify-center shadow-sm"><MapPin size={20} className="text-[#1B4332]" /></div>
+                                <div><h1 className="text-2xl serif-font text-[#1C1917]">{user?.destino?.replace('PENDIENTE: ', '') || currentCity}</h1><p className="text-[10px] font-bold text-[#78716C] tracking-widest uppercase mt-0.5">Código: <span className="text-[#D08C60]">{user?.viajeCodigo}</span></p></div>
+                            </div>
+                            <div className="flex gap-2">
+                                <button onClick={handleLogOut} className="w-10 h-10 bg-red-50 text-red-600 border border-red-100 rounded-full flex items-center justify-center shadow-sm hover:bg-red-100 transition-all group" title="Salir del viaje">
+                                    <LogOut size={18} className="group-hover:scale-110 transition-transform" />
+                                </button>
+                                {user?.esAdmin ? (<button onClick={openRolesModal} className="w-10 h-10 bg-[#1B4332] text-white rounded-full flex items-center justify-center shadow-md hover:bg-[#2D6A4F] transition-colors"><Settings size={18} /></button>) : null}
+                                <div onClick={onParticipantsClick} className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full shadow-sm border border-[#E7E5E4] cursor-pointer"><div className="w-6 h-6 rounded-full bg-[#1B4332] text-white flex items-center justify-center text-xs font-serif">{user?.nombre.charAt(0)}</div><span className="text-xs font-medium text-[#78716C]">{user?.esAdmin ? 'Admin' : 'Guest'}</span></div>
+                            </div>
+                        </div>
 
-                {/* CONTENIDO CONDICIONAL: ¿PENDIENTE O MAPA? */}
-                {user?.destino?.startsWith("PENDIENTE") ? (
-                    <div className="grid grid-cols-2 gap-4">
-                        <div onClick={() => setView('voting_room')} className="bg-white p-6 rounded-[24px] border border-[#E7E5E4] shadow-sm flex flex-col items-center justify-center text-center gap-2 cursor-pointer hover:border-[#1B4332] hover:bg-[#F0FDF4] transition-all group"><div className="w-12 h-12 bg-[#E8F5E9] rounded-full flex items-center justify-center text-[#1B4332] group-hover:scale-110 transition-transform"><Vote size={24} /></div><h3 className="serif-font text-lg text-[#1B4332]">Votar Destino</h3></div>
-                        <div onClick={() => setView('calendar_room')} className="bg-white p-6 rounded-[24px] border border-[#E7E5E4] shadow-sm flex flex-col items-center justify-center text-center gap-2 cursor-pointer hover:border-[#1B4332] hover:bg-[#F0FDF4] transition-all group"><div className="w-12 h-12 bg-[#E8F5E9] rounded-full flex items-center justify-center text-[#1B4332] group-hover:scale-110 transition-transform"><Calendar size={24} /></div><h3 className="serif-font text-lg text-[#1B4332]">Fechas</h3></div>
+                        {/* CONTENIDO CONDICIONAL: ¿PENDIENTE O MAPA? */}
+                        {user?.destino?.startsWith("PENDIENTE") ? (
+                            <div className="grid grid-cols-2 gap-4">
+                                <div onClick={() => setView('voting_room')} className="bg-white p-6 rounded-[24px] border border-[#E7E5E4] shadow-sm flex flex-col items-center justify-center text-center gap-2 cursor-pointer hover:border-[#1B4332] hover:bg-[#F0FDF4] transition-all group"><div className="w-12 h-12 bg-[#E8F5E9] rounded-full flex items-center justify-center text-[#1B4332] group-hover:scale-110 transition-transform"><Vote size={24} /></div><h3 className="serif-font text-lg text-[#1B4332]">Votar Destino</h3></div>
+                                <div onClick={() => setView('calendar_room')} className="bg-white p-6 rounded-[24px] border border-[#E7E5E4] shadow-sm flex flex-col items-center justify-center text-center gap-2 cursor-pointer hover:border-[#1B4332] hover:bg-[#F0FDF4] transition-all group"><div className="w-12 h-12 bg-[#E8F5E9] rounded-full flex items-center justify-center text-[#1B4332] group-hover:scale-110 transition-transform"><Calendar size={24} /></div><h3 className="serif-font text-lg text-[#1B4332]">Fechas</h3></div>
+                            </div>
+                        ) : (
+                            <>
+                                <div onClick={() => setIsWalletOpen(true)} className="relative overflow-hidden bg-[#1B4332] rounded-[24px] p-8 text-white shadow-xl cursor-pointer transition-transform active:scale-[0.98]"><div className="absolute right-0 top-0 opacity-10 transform translate-x-1/3 -translate-y-1/3"><Compass size={180} /></div><div className="relative z-10"><div className="flex justify-between items-start mb-6"><p className="text-[#A7D7C5] text-[10px] font-bold uppercase tracking-[0.2em]">Fondos del Grupo</p><div className="bg-white/10 p-2 rounded-full"><Wallet size={20} /></div></div><p className="text-5xl serif-font tracking-tight mb-2">{Number(walletData.saldoBote).toFixed(2)}€</p><div className="flex items-center gap-2 text-xs text-[#A7D7C5]"><span className="w-1.5 h-1.5 bg-[#4ADE80] rounded-full"></span> <span>Balance activo</span></div></div></div>
+                                <div className="card-premium p-3 h-[450px] relative flex flex-col"><div className="absolute top-6 left-6 right-6 z-[1000]"><div className="bg-white/90 backdrop-blur-md shadow-lg rounded-xl p-1 flex items-center border border-[#E7E5E4]"><div className="p-3 text-[#78716C]"><Search size={18} /></div><input type="text" placeholder="Descubrir lugares..." className="flex-1 bg-transparent outline-none text-[#1C1917] placeholder:text-[#A8A29E] text-sm font-medium" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} /></div></div><div className="flex-1 rounded-xl overflow-hidden relative z-0"><MapContainer center={cityCoords} zoom={13} style={{ height: '100%', width: '100%' }} zoomControl={false}><TileLayer url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" attribution='© CartoDB' /><Marker position={cityCoords}><Popup><b>📍 Centro</b></Popup></Marker>{recommendations.map((site: any) => (<Marker key={site.id} position={[site.coords.lat, site.coords.lng]} icon={redIcon}><Popup>{site.nombre}</Popup></Marker>))}<MapUpdater center={cityCoords} /></MapContainer></div><div className="absolute bottom-6 left-6 right-6 z-[1000]"><div className="bg-white/90 backdrop-blur-md shadow-lg rounded-xl p-4 border border-[#E7E5E4]"><div className="flex justify-between items-center text-[10px] font-bold text-[#78716C] uppercase tracking-widest mb-2"><span className="flex items-center gap-2"><Target size={12} /> Exploración</span><span className="text-[#1B4332]">{searchRadius >= 1000 ? `${searchRadius / 1000} km` : `${searchRadius} m`}</span></div><input type="range" min="500" max="5000" step="100" value={searchRadius} onChange={(e) => setSearchRadius(Number(e.target.value))} className="w-full accent-[#1B4332] h-1 bg-[#E7E5E4] rounded-lg appearance-none cursor-pointer" /></div></div></div>
+                            </>
+                        )}
                     </div>
-                ) : (
-                    <>
-                        <div onClick={() => setIsWalletOpen(true)} className="relative overflow-hidden bg-[#1B4332] rounded-[24px] p-8 text-white shadow-xl cursor-pointer transition-transform active:scale-[0.98]"><div className="absolute right-0 top-0 opacity-10 transform translate-x-1/3 -translate-y-1/3"><Compass size={180} /></div><div className="relative z-10"><div className="flex justify-between items-start mb-6"><p className="text-[#A7D7C5] text-[10px] font-bold uppercase tracking-[0.2em]">Fondos del Grupo</p><div className="bg-white/10 p-2 rounded-full"><Wallet size={20} /></div></div><p className="text-5xl serif-font tracking-tight mb-2">{Number(walletData.saldoBote).toFixed(2)}€</p><div className="flex items-center gap-2 text-xs text-[#A7D7C5]"><span className="w-1.5 h-1.5 bg-[#4ADE80] rounded-full"></span> <span>Balance activo</span></div></div></div>
-                        <div className="card-premium p-3 h-[450px] relative flex flex-col"><div className="absolute top-6 left-6 right-6 z-[1000]"><div className="bg-white/90 backdrop-blur-md shadow-lg rounded-xl p-1 flex items-center border border-[#E7E5E4]"><div className="p-3 text-[#78716C]"><Search size={18} /></div><input type="text" placeholder="Descubrir lugares..." className="flex-1 bg-transparent outline-none text-[#1C1917] placeholder:text-[#A8A29E] text-sm font-medium" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} /></div></div><div className="flex-1 rounded-xl overflow-hidden relative z-0"><MapContainer center={cityCoords} zoom={13} style={{ height: '100%', width: '100%' }} zoomControl={false}><TileLayer url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" attribution='© CartoDB' /><Marker position={cityCoords}><Popup><b>📍 Centro</b></Popup></Marker>{recommendations.map((site: any) => (<Marker key={site.id} position={[site.coords.lat, site.coords.lng]} icon={redIcon}><Popup>{site.nombre}</Popup></Marker>))}<MapUpdater center={cityCoords} /></MapContainer></div><div className="absolute bottom-6 left-6 right-6 z-[1000]"><div className="bg-white/90 backdrop-blur-md shadow-lg rounded-xl p-4 border border-[#E7E5E4]"><div className="flex justify-between items-center text-[10px] font-bold text-[#78716C] uppercase tracking-widest mb-2"><span className="flex items-center gap-2"><Target size={12} /> Exploración</span><span className="text-[#1B4332]">{searchRadius >= 1000 ? `${searchRadius / 1000} km` : `${searchRadius} m`}</span></div><input type="range" min="500" max="5000" step="100" value={searchRadius} onChange={(e) => setSearchRadius(Number(e.target.value))} className="w-full accent-[#1B4332] h-1 bg-[#E7E5E4] rounded-lg appearance-none cursor-pointer" /></div></div></div>
-                    </>
-                )}
-            </div>
 
-            {/* PANEL WALLET INFERIOR */}
-            <div className={`fixed inset-x-0 bottom-0 z-[2000] bg-[#FFFFFF] rounded-t-[2.5rem] shadow-[0_-10px_60px_rgba(27,67,50,0.15)] transition-transform duration-500 h-[92%] ${isWalletOpen ? 'translate-y-0' : 'translate-y-full'}`}>
-                <div className="p-8 h-full flex flex-col">
-                    <div className="flex justify-between items-start mb-8"><div><h2 className="text-3xl serif-font text-[#1B4332]">Finanzas</h2><p className="text-xs text-[#78716C] mt-1">Gestión transparente</p></div><button onClick={() => setIsWalletOpen(false)} className="p-3 bg-[#F8F5F2] rounded-full hover:bg-gray-200"><X size={24} className="text-[#1B4332]" /></button></div>
-                    <div className="flex p-1.5 bg-[#F8F5F2] rounded-xl mb-8"><button onClick={() => setActiveTab('bote')} className={`flex-1 py-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${activeTab === 'bote' ? 'bg-white text-[#1B4332] shadow-sm' : 'text-[#A8A29E]'}`}>Grupo</button><button onClick={() => setActiveTab('privado')} className={`flex-1 py-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${activeTab === 'privado' ? 'bg-white text-[#1B4332] shadow-sm' : 'text-[#A8A29E]'}`}>Mis Gastos</button></div>
-                    {activeTab === 'bote' ? (
-                        <div className="flex-1 overflow-y-auto no-scrollbar space-y-4">
-                            {user?.esTesorero && (
-                                <div className="grid grid-cols-2 gap-4 mb-6">
-                                    <button onClick={() => setModalAction({ type: 'crearRonda' })} className="py-4 btn-primary rounded-xl font-medium text-sm flex flex-col items-center gap-2"><Plus size={20} /> Solicitar</button>
-                                    <button onClick={() => setModalAction({ type: 'cambiarTesorero' })} className="py-4 btn-secondary rounded-xl font-medium text-sm flex flex-col items-center gap-2"><User size={20} /> Ceder Cargo</button>
+                    {/* PANEL WALLET INFERIOR */}
+                    <div className={`fixed inset-x-0 bottom-0 z-[2000] bg-[#FFFFFF] rounded-t-[2.5rem] shadow-[0_-10px_60px_rgba(27,67,50,0.15)] transition-transform duration-500 h-[92%] ${isWalletOpen ? 'translate-y-0' : 'translate-y-full'}`}>
+                        <div className="p-8 h-full flex flex-col">
+                            <div className="flex justify-between items-start mb-8"><div><h2 className="text-3xl serif-font text-[#1B4332]">Finanzas</h2><p className="text-xs text-[#78716C] mt-1">Gestión transparente</p></div><button onClick={() => setIsWalletOpen(false)} className="p-3 bg-[#F8F5F2] rounded-full hover:bg-gray-200"><X size={24} className="text-[#1B4332]" /></button></div>
+                            <div className="flex p-1.5 bg-[#F8F5F2] rounded-xl mb-8"><button onClick={() => setActiveTab('bote')} className={`flex-1 py-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${activeTab === 'bote' ? 'bg-white text-[#1B4332] shadow-sm' : 'text-[#A8A29E]'}`}>Grupo</button><button onClick={() => setActiveTab('privado')} className={`flex-1 py-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${activeTab === 'privado' ? 'bg-white text-[#1B4332] shadow-sm' : 'text-[#A8A29E]'}`}>Mis Gastos</button></div>
+                            {activeTab === 'bote' ? (
+                                <div className="flex-1 overflow-y-auto no-scrollbar space-y-4">
+                                    {user?.esTesorero && (
+                                        <div className="grid grid-cols-2 gap-4 mb-6">
+                                            <button onClick={() => setModalAction({ type: 'crearRonda' })} className="py-4 btn-primary rounded-xl font-medium text-sm flex flex-col items-center gap-2"><Plus size={20} /> Solicitar</button>
+                                            <button onClick={() => setModalAction({ type: 'cambiarTesorero' })} className="py-4 btn-secondary rounded-xl font-medium text-sm flex flex-col items-center gap-2"><User size={20} /> Ceder Cargo</button>
+                                        </div>
+                                    )}
+                                    {walletData.usuarios.map((u: any) => (
+                                        <div key={u.id} className="flex items-center justify-between py-4 border-b border-[#F8F5F2]">
+                                            <div className="flex items-center gap-4">
+                                                <div className={`w-12 h-12 rounded-full flex items-center justify-center serif-font text-lg ${u.es_tesorero ? 'bg-[#1B4332] text-white' : 'bg-[#F8F5F2] text-[#78716C]'}`}>{u.nombre.charAt(0)}</div>
+                                                <div><p className="font-bold text-[#1C1917] text-lg">{u.nombre}</p><p className="text-[10px] text-[#A8A29E] font-bold uppercase tracking-wider">{u.es_tesorero ? 'Admin' : 'Viajero'}</p></div>
+                                            </div>
+                                            <div className="text-right">
+                                                {u.credito > 0 ? <span className="text-[#40916C] font-bold text-lg">+{u.balance.toFixed(2)}€</span> : u.debe ? <span className="text-[#9B2226] font-bold text-lg">{u.balance.toFixed(2)}€</span> : <span className="text-gray-300 font-bold text-lg">0.00€</span>}
+                                                {user?.esTesorero && u.debe && <button onClick={() => setModalAction({ type: 'pagar', data: u })} className="block mt-1 text-[10px] font-bold text-[#1B4332] underline ml-auto">COBRAR</button>}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    <button onClick={() => setModalAction({ type: 'adelantar' })} className="w-full mt-4 py-3 text-[#D08C60] text-xs font-bold uppercase tracking-widest hover:text-[#b0734c]">Registrar Pago Urgente</button>
+                                </div>
+                            ) : (
+                                <div className="flex-1 overflow-y-auto no-scrollbar space-y-4">
+                                    <button onClick={() => setModalAction({ type: 'gastoPersonal' })} className="w-full py-4 border border-dashed border-[#D6D3D1] rounded-xl text-[#78716C] hover:border-[#1B4332] hover:text-[#1B4332] font-medium text-sm transition-all flex items-center justify-center gap-2 mb-4"><Plus size={18} /> Nuevo Ticket Personal</button>
+                                    {misGastos.map((g: any) => (<div key={g.id} className="flex justify-between items-center py-4 border-b border-[#F8F5F2]"><span className="font-medium text-[#57534E]">{g.concepto}</span><span className="font-bold text-[#1C1917]">-{g.monto.toFixed(2)}€</span></div>))}
                                 </div>
                             )}
-                            {walletData.usuarios.map((u: any) => (
-                                <div key={u.id} className="flex items-center justify-between py-4 border-b border-[#F8F5F2]">
-                                    <div className="flex items-center gap-4">
-                                        <div className={`w-12 h-12 rounded-full flex items-center justify-center serif-font text-lg ${u.es_tesorero ? 'bg-[#1B4332] text-white' : 'bg-[#F8F5F2] text-[#78716C]'}`}>{u.nombre.charAt(0)}</div>
-                                        <div><p className="font-bold text-[#1C1917] text-lg">{u.nombre}</p><p className="text-[10px] text-[#A8A29E] font-bold uppercase tracking-wider">{u.es_tesorero ? 'Admin' : 'Viajero'}</p></div>
-                                    </div>
-                                    <div className="text-right">
-                                        {u.credito > 0 ? <span className="text-[#40916C] font-bold text-lg">+{u.balance.toFixed(2)}€</span> : u.debe ? <span className="text-[#9B2226] font-bold text-lg">{u.balance.toFixed(2)}€</span> : <span className="text-gray-300 font-bold text-lg">0.00€</span>}
-                                        {user?.esTesorero && u.debe && <button onClick={() => setModalAction({ type: 'pagar', data: u })} className="block mt-1 text-[10px] font-bold text-[#1B4332] underline ml-auto">COBRAR</button>}
+                        </div>
+                    </div>
+
+                    {/* MODALS GESTIÓN */}
+                    <Modal isOpen={showRolesModal} title="Gestión de Equipo" onClose={() => setShowRolesModal(false)}>
+                        <div className="space-y-4">
+                            <p className="text-sm text-[#78716C] mb-4">Delega responsabilidades. Puedes tener múltiples administradores.</p>
+                            {usersList.map((u: any) => (
+                                <div key={u.id} className="flex items-center justify-between p-3 bg-[#F8F5F2] rounded-xl">
+                                    <span className="font-bold text-[#1B4332]">{u.nombre}</span>
+                                    <div className="flex gap-2">
+                                        <button onClick={() => toggleRole(u.id, 'es_admin', u.es_admin)} className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${u.es_admin ? 'bg-[#1B4332] text-white shadow-md' : 'bg-white text-gray-400 border border-gray-200'}`}>ADMIN</button>
+                                        <button onClick={() => toggleRole(u.id, 'es_tesorero', u.es_tesorero)} className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${u.es_tesorero ? 'bg-[#D08C60] text-white shadow-md' : 'bg-white text-gray-400 border border-gray-200'}`}>TESORERO</button>
                                     </div>
                                 </div>
                             ))}
-                            <button onClick={() => setModalAction({ type: 'adelantar' })} className="w-full mt-4 py-3 text-[#D08C60] text-xs font-bold uppercase tracking-widest hover:text-[#b0734c]">Registrar Pago Urgente</button>
                         </div>
-                    ) : (
-                        <div className="flex-1 overflow-y-auto no-scrollbar space-y-4">
-                            <button onClick={() => setModalAction({ type: 'gastoPersonal' })} className="w-full py-4 border border-dashed border-[#D6D3D1] rounded-xl text-[#78716C] hover:border-[#1B4332] hover:text-[#1B4332] font-medium text-sm transition-all flex items-center justify-center gap-2 mb-4"><Plus size={18} /> Nuevo Ticket Personal</button>
-                            {misGastos.map((g: any) => (<div key={g.id} className="flex justify-between items-center py-4 border-b border-[#F8F5F2]"><span className="font-medium text-[#57534E]">{g.concepto}</span><span className="font-bold text-[#1C1917]">-{g.monto.toFixed(2)}€</span></div>))}
+                    </Modal>
+
+                    <Modal isOpen={!!modalAction && modalAction.type !== 'proponer'} title={modalAction?.type === 'crearRonda' ? 'Aportación Grupo' : modalAction?.type === 'pagar' ? `Cobro a ${modalAction?.data?.nombre}` : modalAction?.type === 'adelantar' ? 'Pago de Urgencia' : modalAction?.type === 'cambiarTesorero' ? 'Relevo Admin' : 'Gasto Personal'} onClose={() => { setModalAction(null); setInputValue(''); setInputValue2(''); }}>
+                        <div className="space-y-6">
+                            {modalAction?.type === 'cambiarTesorero' ? (
+                                <div className="space-y-2">{walletData.usuarios.filter((u: any) => u.id !== user.id).map((u: any) => (<button key={u.id} onClick={() => { setInputValue(u.id); setTimeout(ejecutarAccion, 100); }} className="w-full p-4 border-b border-[#F8F5F2] hover:bg-[#F8F5F2] serif-font text-xl text-[#1B4332] text-left transition-all">{u.nombre}</button>))}</div>
+                            ) : (
+                                <>
+                                    <div><label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Importe</label><div className="flex items-center border-b border-[#E7E5E4] py-2"><span className="text-2xl text-[#1B4332] serif-font mr-2">€</span><input type="number" autoFocus className="w-full bg-transparent text-3xl text-[#1B4332] serif-font outline-none placeholder:text-[#E7E5E4]" placeholder="0.00" value={inputValue} onChange={e => setInputValue(e.target.value)} /></div></div>
+                                    {(modalAction?.type === 'adelantar' || modalAction?.type === 'gastoPersonal') && (<div><label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Concepto</label><input type="text" className="w-full bg-[#F8F5F2] p-3 rounded-lg text-lg text-[#1C1917] outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Cena..." value={inputValue2} onChange={e => setInputValue2(e.target.value)} /></div>)}
+                                    <button onClick={ejecutarAccion} className="w-full py-4 btn-primary text-sm uppercase tracking-widest mt-2">Confirmar</button>
+                                </>
+                            )}
                         </div>
-                    )}
-                </div>
-            </div>
+                    </Modal>
 
-            {/* MODALS GESTIÓN */}
-            <Modal isOpen={showRolesModal} title="Gestión de Equipo" onClose={() => setShowRolesModal(false)}>
-                <div className="space-y-4">
-                    <p className="text-sm text-[#78716C] mb-4">Delega responsabilidades. Puedes tener múltiples administradores.</p>
-                    {usersList.map((u: any) => (
-                        <div key={u.id} className="flex items-center justify-between p-3 bg-[#F8F5F2] rounded-xl">
-                            <span className="font-bold text-[#1B4332]">{u.nombre}</span>
-                            <div className="flex gap-2">
-                                <button onClick={() => toggleRole(u.id, 'es_admin', u.es_admin)} className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${u.es_admin ? 'bg-[#1B4332] text-white shadow-md' : 'bg-white text-gray-400 border border-gray-200'}`}>ADMIN</button>
-                                <button onClick={() => toggleRole(u.id, 'es_tesorero', u.es_tesorero)} className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${u.es_tesorero ? 'bg-[#D08C60] text-white shadow-md' : 'bg-white text-gray-400 border border-gray-200'}`}>TESORERO</button>
-                            </div>
+                    <Modal isOpen={modalAction?.type === 'proponer'} title="Nueva Propuesta" onClose={() => setModalAction(null)}>
+                        <div className="space-y-4">
+                            <label className="text-[10px] font-bold text-[#78716C] uppercase tracking-widest">Nombre del Destino</label>
+                            <input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Tokio" value={newProposal} onChange={e => setNewProposal(e.target.value)} />
+                            <button onClick={handlePropose} className="w-full py-4 btn-primary text-lg flex items-center justify-center gap-2 mt-4"><Plus size={20} /> Proponer Destino</button>
                         </div>
-                    ))}
-                </div>
-            </Modal>
+                    </Modal>
 
-            <Modal isOpen={!!modalAction && modalAction.type !== 'proponer'} title={modalAction?.type === 'crearRonda' ? 'Aportación Grupo' : modalAction?.type === 'pagar' ? `Cobro a ${modalAction?.data?.nombre}` : modalAction?.type === 'adelantar' ? 'Pago de Urgencia' : modalAction?.type === 'cambiarTesorero' ? 'Relevo Admin' : 'Gasto Personal'} onClose={() => { setModalAction(null); setInputValue(''); setInputValue2(''); }}>
-                <div className="space-y-6">
-                    {modalAction?.type === 'cambiarTesorero' ? (
-                        <div className="space-y-2">{walletData.usuarios.filter((u: any) => u.id !== user.id).map((u: any) => (<button key={u.id} onClick={() => { setInputValue(u.id); setTimeout(ejecutarAccion, 100); }} className="w-full p-4 border-b border-[#F8F5F2] hover:bg-[#F8F5F2] serif-font text-xl text-[#1B4332] text-left transition-all">{u.nombre}</button>))}</div>
-                    ) : (
-                        <>
-                            <div><label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Importe</label><div className="flex items-center border-b border-[#E7E5E4] py-2"><span className="text-2xl text-[#1B4332] serif-font mr-2">€</span><input type="number" autoFocus className="w-full bg-transparent text-3xl text-[#1B4332] serif-font outline-none placeholder:text-[#E7E5E4]" placeholder="0.00" value={inputValue} onChange={e => setInputValue(e.target.value)} /></div></div>
-                            {(modalAction?.type === 'adelantar' || modalAction?.type === 'gastoPersonal') && (<div><label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Concepto</label><input type="text" className="w-full bg-[#F8F5F2] p-3 rounded-lg text-lg text-[#1C1917] outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Cena..." value={inputValue2} onChange={e => setInputValue2(e.target.value)} /></div>)}
-                            <button onClick={ejecutarAccion} className="w-full py-4 btn-primary text-sm uppercase tracking-widest mt-2">Confirmar</button>
-                        </>
-                    )}
-                </div>
-            </Modal>
-
-            <Modal isOpen={modalAction?.type === 'proponer'} title="Nueva Propuesta" onClose={() => setModalAction(null)}>
-                <div className="space-y-4">
-                    <label className="text-[10px] font-bold text-[#78716C] uppercase tracking-widest">Nombre del Destino</label>
-                    <input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Tokio" value={newProposal} onChange={e => setNewProposal(e.target.value)} />
-                    <button onClick={handlePropose} className="w-full py-4 btn-primary text-lg flex items-center justify-center gap-2 mt-4"><Plus size={20} /> Proponer Destino</button>
-                </div>
-            </Modal>
-
-            <CustomAlert {...alertConfig} />
+                    <CustomAlert {...alertConfig} />
+                </>
+            )}
         </div>
     );
 };
