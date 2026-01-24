@@ -1,11 +1,39 @@
+// 🔥 CARGAR ENVIRONMENT VARIABLES PRIMERO (ANTES DE TODO)
+import 'dotenv/config';
+
+console.log('🔍 Intentando leer .env...');
+console.log('📍 URL encontrada:', process.env.SUPABASE_URL ? 'SÍ' : 'NO');
+console.log('🔑 KEY encontrada:', process.env.SUPABASE_KEY ? 'SÍ' : 'NO');
+console.log('📍 VITE_URL encontrada:', process.env.VITE_SUPABASE_URL ? 'SÍ' : 'NO');
+console.log('🔑 VITE_KEY encontrada:', process.env.VITE_SUPABASE_ANON_KEY ? 'SÍ' : 'NO');
+
 import express from 'express';
 import cors from 'cors';
 import axios from 'axios';
 import Database from 'better-sqlite3';
+import { createClient } from '@supabase/supabase-js';
 
 const PORT = 3005;
 // 👇 TU CLAVE AQUÍ 👇
 const GOOGLE_API_KEY = 'AIzaSyDS3VslypLLj3ztowsvykxRUIcUrah7BZg';
+
+// --- SUPABASE CLIENT (SERVER-SIDE) CON FALLBACK ROBUSTO ---
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ynrqpbnmtnucyifqswvb.supabase.co';
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+
+console.log('✅ Usando Supabase URL:', SUPABASE_URL);
+console.log('✅ Usando Supabase KEY:', SUPABASE_SERVICE_KEY ? 'ENCONTRADA (' + SUPABASE_SERVICE_KEY.substring(0, 20) + '...)' : 'NO ENCONTRADA ❌');
+
+if (!SUPABASE_SERVICE_KEY) {
+    console.error('❌ FATAL: No se encontró ninguna clave de Supabase en las variables de entorno.');
+    console.error('💡 Verifica que tu archivo .env contenga SUPABASE_KEY, VITE_SUPABASE_ANON_KEY, o similar.');
+    process.exit(1);
+}
+
+const supabaseServer = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+    auth: { persistSession: false } // 🔥 SIN CACHE - Evita errores de "schema cache"
+});
+console.log('🔗 Supabase client configured for server proxy (NO CACHE)');
 
 // Usamos verbose para ver las queries en la consola (ayuda a depurar)
 const db = new Database('viajes_pro.db');
@@ -167,7 +195,7 @@ app.get('/api/voting/candidaturas', (req, res) => {
 });
 
 app.post('/api/voting/proponer', async (req, res) => {
-    const { viajeId, usuarioId, ciudad } = req.body;
+    const { viajeId, usuarioId, ciudad, datos } = req.body;
     let fotoUrl = null;
     try {
         const placesUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(ciudad)}&key=${GOOGLE_API_KEY}`;
@@ -178,7 +206,12 @@ app.post('/api/voting/proponer', async (req, res) => {
     } catch (e) { console.log("⚠️ Sin foto"); }
 
     try {
-        const info = db.prepare('INSERT INTO candidaturas (viaje_id, usuario_id, ciudad, datos_viabilidad, foto_url) VALUES (?, ?, ?, ?, ?)').run(viajeId, usuarioId, ciudad, generarViabilidad(ciudad), fotoUrl);
+        // Si viene datos de IA (del Edge Function), lo usamos; si no, generamos mock
+        const datosFinales = datos || generarViabilidad(ciudad);
+
+        const info = db.prepare('INSERT INTO candidaturas (viaje_id, usuario_id, ciudad, datos_viabilidad, foto_url) VALUES (?, ?, ?, ?, ?)').run(viajeId, usuarioId, ciudad, datosFinales, fotoUrl);
+
+        console.log(`✨ Ciudad "${ciudad}" ${datos ? 'CON análisis de IA' : 'con mock data'}`);
         res.json({ success: true, id: info.lastInsertRowid });
     } catch (e) { res.status(500).json({ error: "Error BD" }); }
 });
@@ -622,5 +655,65 @@ app.post('/api/wallet/adelantar', (req, res) => { const { usuarioId, monto, conc
 app.get('/api/wallet/mis-gastos', (req, res) => { const { usuarioId } = req.query; const gastos = db.prepare('SELECT * FROM gastos_personales WHERE usuario_id = ? ORDER BY id DESC').all(usuarioId); res.json({ gastos }); });
 app.post('/api/wallet/nuevo-gasto-personal', (req, res) => { const { usuarioId, concepto, monto } = req.body; db.prepare('INSERT INTO gastos_personales (usuario_id, concepto, monto) VALUES (?, ?, ?)').run(usuarioId, concepto, monto); res.json({ success: true }); });
 app.get('/api/buscar-sitios', async (req, res) => { const { busqueda, lat, lng, radio } = req.query; let q = busqueda; if (['tapas', 'bar', 'comer', 'restaurante'].some(x => busqueda.toLowerCase().includes(x))) q += ' calidad tradicional'; const radioFinal = radio || 1500; try { const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(q)}&location=${lat},${lng}&radius=${radioFinal}&key=${GOOGLE_API_KEY}`; const resp = await axios.get(url); if (resp.data.results) { const hits = resp.data.results.filter(p => p.rating >= 4.2).slice(0, 10).map(p => ({ id: p.place_id, nombre: p.name, rating: p.rating, total_opiniones: p.user_ratings_total, coords: p.geometry.location, direccion: p.formatted_address, foto: p.photos ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photoreference=${p.photos[0].photo_reference}&key=${GOOGLE_API_KEY}` : null, categoria: p.types ? p.types[0].replace(/_/g, ' ').toUpperCase() : 'LOCAL', abierto: p.opening_hours ? p.opening_hours.open_now : null })); res.json({ sitios: hits }); } else res.json({ sitios: [] }); } catch (e) { res.json({ sitios: [] }); } });
+
+// --- SUPABASE PROXY: CAMBIAR FASE ---  
+app.post('/api/viaje/cambiar-fase', async (req, res) => {
+    const { viajeId, phase, votingDate } = req.body;
+
+    console.log('🔄 Proxy: Cambiando fase vía Supabase:', { viajeId, phase });
+
+    try {
+        const updateData = {
+            phase: phase,
+            voting_start_date: votingDate || new Date().toISOString()
+        };
+
+        const { data, error } = await supabaseServer
+            .from('proposals')
+            .update(updateData)
+            .eq('id', viajeId);
+
+        if (error) {
+            console.error('❌ Supabase error:', error);
+            return res.status(500).json({ success: false, error: error.message });
+        }
+
+        console.log('✅ Fase cambiada exitosamente');
+        res.json({ success: true, data });
+    } catch (e) {
+        console.error('❌ Server error:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// --- SUPABASE PROXY: FIJAR FECHAS ---
+app.post('/api/viaje/fijar-fechas', async (req, res) => {
+    const { viajeId, fechaInicio, fechaFin, votingStartDate } = req.body;
+
+    console.log('📅 Proxy: Fijando fechas vía Supabase:', { viajeId, fechaInicio, fechaFin });
+
+    try {
+        const updateData = {};
+        if (fechaInicio) updateData.fecha_inicio = fechaInicio;
+        if (fechaFin) updateData.fecha_fin = fechaFin;
+        if (votingStartDate) updateData.voting_start_date = votingStartDate;
+
+        const { data, error } = await supabaseServer
+            .from('proposals')
+            .update(updateData)
+            .eq('id', viajeId);
+
+        if (error) {
+            console.error('❌ Supabase error:', error);
+            return res.status(500).json({ success: false, error: error.message });
+        }
+
+        console.log('✅ Fechas actualizadas exitosamente');
+        res.json({ success: true, data });
+    } catch (e) {
+        console.error('❌ Server error:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
 
 app.listen(PORT, () => { console.log(`\n✈️ SERVIDOR LISTO EN PUERTO ${PORT}`); });

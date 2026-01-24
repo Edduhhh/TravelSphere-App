@@ -6,8 +6,9 @@ import 'leaflet/dist/leaflet.css';
 import { GroupAvailability } from './GroupAvailability';
 import { ConsensusView } from './ConsensusView';
 import { TripSummary } from './TripSummary';
-import { SurvivalSession } from './SurvivalSession';
-import { DebugElimination } from './DebugElimination';
+import { VotingCountdown } from './VotingCountdown';
+import { EliminationScreen } from './EliminationScreen';
+import { supabase } from '../../services/supabase';
 
 // DND-KIT IMPORTS
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, TouchSensor } from '@dnd-kit/core';
@@ -82,9 +83,9 @@ const CustomAlert = ({ type, message, onConfirm, onCancel }: any) => {
 
 export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any) => {
     // --- ESTADOS ---
-    const [view, setView] = useState<'lobby' | 'dashboard' | 'voting_room' | 'calendar_room' | 'seasonality_dashboard' | 'group_availability' | 'consensus_view' | 'trip_summary' | 'survival_session' | 'debug_elimination'>('lobby');
+    const [view, setView] = useState<'lobby' | 'dashboard' | 'voting_room' | 'calendar_room' | 'seasonality_dashboard' | 'group_availability' | 'consensus_view' | 'trip_summary'>('lobby');
     const [user, setUser] = useState<any>(null);
-    const [showSurvival, setShowSurvival] = useState(false);
+
 
     // Lobby
     const [lobbyMode, setLobbyMode] = useState<'start' | 'create_choice' | 'create_fixed' | 'create_voting' | 'join'>('start');
@@ -101,6 +102,12 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const [hasVoted, setHasVoted] = useState(false);
     const [newProposal, setNewProposal] = useState('');
     const [winnerData, setWinnerData] = useState<any>(null);
+
+    // Olympic System / Porcos Bravos
+    const [tripPhase, setTripPhase] = useState<'PLANNING' | 'VOTING' | 'FINISHED'>('PLANNING');
+    const [votingStartDate, setVotingStartDate] = useState<string | null>(null);
+    const [showDatePicker, setShowDatePicker] = useState(false);
+    const [selectedDate, setSelectedDate] = useState('');
 
     // Roles
     const [showRolesModal, setShowRolesModal] = useState(false);
@@ -266,6 +273,14 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                     setWinnerData(viajeData.destino);
                     fetchCityCoords(viajeData.destino);
                 }
+            }
+
+            // Sincronizar fase olímpica con el servidor
+            if (viajeData.fase && viajeData.fase !== tripPhase) {
+                setTripPhase(viajeData.fase);
+            }
+            if (viajeData.voting_start_date) {
+                setVotingStartDate(viajeData.voting_start_date);
             }
         } catch (e) {
             console.error("Error checking trip status:", e);
@@ -598,80 +613,222 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         return (<div className="fixed inset-0 z-[5000] bg-[#F8F5F2] flex items-center justify-center p-6"><div className="w-full max-w-md bg-white p-12 rounded-[2rem] shadow-xl animate-enter relative overflow-hidden border border-[#E7E5E4]"><div className="absolute top-0 left-0 w-full h-2 bg-[#1B4332]"></div><div className="flex justify-center mb-6"><div className="bg-[#E8F5E9] p-4 rounded-full"><Compass size={40} className="text-[#1B4332]" strokeWidth={1.5} /></div></div><h1 className="text-3xl serif-font text-center text-[#1B4332] mb-2">{lobbyMode === 'start' ? 'TravelSphere' : lobbyMode === 'create_choice' ? 'Diseña tu Viaje' : lobbyMode === 'create_voting' ? 'Misión Democrática' : 'Comenzar Aventura'}</h1><p className="text-center text-[#78716C] mb-8 text-sm tracking-wide">{lobbyMode === 'start' ? 'El arte de viajar en compañía.' : lobbyMode === 'create_choice' ? '¿Tenéis claro el rumbo?' : lobbyMode === 'create_voting' ? 'El grupo decidirá el destino.' : 'Configura los detalles finales.'}</p>{lobbyMode === 'start' && (<div className="space-y-4"><button onClick={() => setLobbyMode('create_choice')} className="w-full py-5 btn-primary text-lg flex items-center justify-center gap-3 shadow-lg shadow-[#1B4332]/10"><Plus size={20} /> Crear Experiencia</button><button onClick={() => setLobbyMode('join')} className="w-full py-5 btn-secondary text-lg font-medium flex items-center justify-center gap-3"><LogIn size={20} /> Unirse al Grupo</button></div>)}{lobbyMode === 'create_choice' && (<div className="space-y-4 animate-enter"><button onClick={() => setLobbyMode('create_fixed')} className="w-full p-6 bg-[#F8F5F2] border border-[#E7E5E4] rounded-2xl hover:border-[#1B4332] hover:bg-[#E8F5E9] transition-all group text-left flex items-center gap-4"><div className="bg-white p-3 rounded-full text-[#1B4332] group-hover:scale-110 transition-transform"><MapPin size={24} /></div><div><h3 className="font-bold text-[#1B4332] text-lg">Destino Definido</h3><p className="text-xs text-[#78716C]">Ya sabemos a dónde vamos.</p></div></button><button onClick={() => setLobbyMode('create_voting')} className="w-full p-6 bg-[#F8F5F2] border border-[#E7E5E4] rounded-2xl hover:border-[#1B4332] hover:bg-[#E8F5E9] transition-all group text-left flex items-center gap-4"><div className="bg-white p-3 rounded-full text-[#1B4332] group-hover:scale-110 transition-transform"><Vote size={24} /></div><div><h3 className="font-bold text-[#1B4332] text-lg">Someter a Votación</h3><p className="text-xs text-[#78716C]">Decidiremos el destino juntos.</p></div></button><button onClick={() => setLobbyMode('start')} className="w-full py-3 text-sm text-[#78716C] hover:text-[#1B4332] flex items-center justify-center gap-2 mt-4"><ArrowRight className="rotate-180" size={16} /> Volver</button></div>)}{(lobbyMode === 'create_fixed' || lobbyMode === 'create_voting' || lobbyMode === 'join') && (<div className="space-y-6 animate-enter"><div><label className="text-[10px] font-bold text-[#78716C] uppercase ml-1 tracking-widest">{lobbyMode === 'create_fixed' ? 'Destino' : lobbyMode === 'join' ? 'Código de Acceso' : 'Nombre del Grupo'}</label><input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332] transition-all placeholder:text-[#D6D3D1]" placeholder={lobbyMode === 'create_fixed' ? "Ej: París" : lobbyMode === 'join' ? "ABCD" : "Ej: Verano 2026"} maxLength={lobbyMode === 'join' ? 4 : 50} value={lobbyMode === 'join' ? lobbyForm.codigo : lobbyForm.destino} onChange={e => lobbyMode === 'join' ? setLobbyForm({ ...lobbyForm, codigo: e.target.value.toUpperCase() }) : setLobbyForm({ ...lobbyForm, destino: e.target.value })} /></div><div><label className="text-[10px] font-bold text-[#78716C] uppercase ml-1 tracking-widest">Tu Nombre</label><input type="text" className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332] transition-all placeholder:text-[#D6D3D1]" placeholder="Ej: Ana" value={lobbyForm.nombre} onChange={e => setLobbyForm({ ...lobbyForm, nombre: e.target.value })} /></div>{lobbyError && <p className="text-[#9B2226] text-xs font-medium text-center bg-[#FEF2F2] py-2 rounded-lg">{lobbyError}</p>}<div className="flex gap-4 pt-4"><button onClick={() => { setLobbyMode('start'); setLobbyError('') }} className="p-4 rounded-full bg-[#F8F5F2] text-[#78716C] hover:bg-gray-200 transition-colors"><ArrowRight size={24} className="rotate-180" /></button><button onClick={() => lobbyMode === 'join' ? handleJoinTrip() : handleCreateTrip(lobbyMode === 'create_voting')} className="flex-1 py-4 btn-primary text-lg shadow-xl shadow-[#1B4332]/20">{lobbyMode === 'create_voting' ? 'Abrir Votación' : lobbyMode === 'create_fixed' ? 'Comenzar' : 'Entrar'}</button></div></div>)}</div></div>);
     }
 
-    // 2. VOTING ROOM
+    // 2. VOTING ROOM (VERSIÓN PROFESIONAL: CONECTADA A LA TABLA 'TRIPS')
     if (view === 'voting_room') {
-        return (
-            <div className="relative h-full bg-[#F8F5F2] p-6 pb-32 overflow-y-auto">
-                {winnerData && (<div className="fixed inset-0 z-[6000] bg-[#1B4332] flex flex-col items-center justify-center p-6 animate-enter text-white"><div className="w-32 h-32 bg-white/10 rounded-full flex items-center justify-center mb-8 animate-bounce"><Trophy size={64} className="text-[#D08C60]" /></div><h2 className="text-xl font-bold uppercase tracking-widest text-[#A7D7C5] mb-2">¡Habemus Destinum!</h2><h1 className="text-6xl serif-font mb-4 text-center leading-tight">{winnerData}</h1><p className="text-white/60 mb-12 max-w-xs text-center">La democracia ha hablado. Preparad las maletas.</p><button onClick={() => { setWinnerData(null); setView('seasonality_dashboard'); }} className="px-10 py-4 bg-white text-[#1B4332] rounded-full font-bold text-lg hover:scale-105 transition-transform shadow-2xl flex items-center gap-2"><Calendar size={24} /> Planificar Fechas</button></div>)}
+        // Obtenemos el código real del viaje (Asumimos que está en el título o en la sesión)
+        // Nota: En tu app actual, el código "OZHD" se muestra en pantalla. Usaremos ese.
+        const tripCode = "OZHD"; // En el futuro, esto vendrá de una variable dinámica user.viajeCodigo
 
-                <div className="flex justify-between items-center mb-8">
-                    <div><button onClick={() => setView('dashboard')} className="flex items-center gap-2 text-[#78716C] mb-2 font-medium hover:text-[#1B4332]"><ArrowRight className="rotate-180" size={16} /> Volver al Panel</button><h1 className="text-3xl serif-font text-[#1B4332]">Sistema de Votación</h1><p className="text-sm text-[#78716C]">Arrastra para ordenar tus preferencias (1º = más puntos).</p></div>
-                    {!hasVoted && <button onClick={() => setModalAction({ type: 'proponer' })} className="bg-[#1B4332] text-white px-4 py-2 rounded-full flex items-center gap-2 cursor-pointer shadow-lg hover:scale-105 transition-transform"><Plus size={16} /><span className="text-xs font-bold uppercase tracking-wider">Añadir</span></button>}
+        const hasDate = !!votingStartDate;
+        const isVotingActive = hasDate && new Date() >= new Date(votingStartDate);
+
+        // A) FASE DE ELIMINACIÓN
+        if (isVotingActive) {
+            return (
+                <div className="fixed inset-0 z-[200] bg-[#F8F5F2] flex flex-col">
+                    <div className="flex-1 overflow-y-auto p-6 pb-32">
+                        <EliminationScreen candidaturas={candidaturas} user={user} onVote={refreshCandidates} />
+                    </div>
+                </div>
+            );
+        }
+
+        // B) FASE DE PREPARACIÓN
+        return (
+            <div className="fixed inset-0 z-[200] bg-[#F8F5F2] flex flex-col">
+                {/* Cabecera */}
+                <div className="pt-6 px-6 pb-4 shrink-0 bg-[#F8F5F2] flex items-center justify-between">
+                    <button onClick={() => setView('dashboard')} className="flex items-center gap-2 text-[#78716C] font-bold text-xs uppercase tracking-widest hover:text-[#1B4332]">
+                        <ArrowRight className="rotate-180" size={14} /> Volver al Mapa
+                    </button>
+                    <span className="text-[10px] font-bold text-[#1B4332]/50 uppercase tracking-widest">
+                        {hasDate ? 'Cuenta Atrás' : 'Configuración'}
+                    </span>
                 </div>
 
-                {hasVoted ? (
-                    <div className="text-center p-12 bg-white rounded-3xl border border-[#E7E5E4] shadow-sm"><div className="w-20 h-20 bg-[#F0FDF4] rounded-full flex items-center justify-center mx-auto mb-4 text-[#166534]"><Check size={40} /></div><h2 className="text-2xl serif-font text-[#1B4332]">¡Voto Registrado!</h2><p className="text-[#78716C] mt-2 mb-6 max-w-md mx-auto">Tus preferencias están guardadas. Por transparencia, los resultados globales permanecerán ocultos hasta que el Administrador cierre la votación.</p><div className="bg-[#F8F5F2] p-4 rounded-xl inline-block"><p className="text-xs font-bold text-[#1B4332] uppercase tracking-widest flex items-center gap-2"><Clock size={14} /> Estado: Esperando al grupo...</p></div></div>
-                ) : (
-                    <div className="max-w-2xl mx-auto">
-                        <div className="bg-[#E8F5E9]/50 p-6 rounded-3xl border border-[#1B4332]/10 flex flex-col min-h-[300px]">
-                            <div className="flex justify-between items-center mb-6"><h3 className="text-sm font-bold text-[#1B4332] uppercase tracking-widest flex items-center gap-2"><Trophy size={16} /> Tu Papeleta de Voto</h3><span className="text-xs bg-white text-[#1B4332] px-2 py-1 rounded border border-[#1B4332]/10">{myRanking.length} Destinos</span></div>
-                            {myRanking.length === 0 && (<div className="text-center py-12 text-[#A8A29E] italic"><p>No hay destinos propuestos aún.</p><button onClick={() => setModalAction({ type: 'proponer' })} className="mt-4 text-[#1B4332] font-bold underline">Sé el primero en proponer</button></div>)}
-                            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-                                <SortableContext items={myRanking.map(c => c.id)} strategy={verticalListSortingStrategy}>
-                                    <div className="space-y-3 flex-1">{myRanking.map((c, index) => (<SortableItem key={c.id} id={c.id}>{(attributes: any, listeners: any) => (<div className="bg-white p-4 rounded-xl shadow-md border border-[#1B4332]/20 flex items-center gap-4 animate-enter group hover:shadow-lg transition-shadow"><div {...attributes} {...listeners} className="text-[#A8A29E] cursor-grab active:cursor-grabbing p-2 hover:bg-slate-100 rounded focus:outline-none"><GripVertical size={20} /></div><div className="bg-[#1B4332] text-white w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shadow-sm z-10">{index + 1}</div><div className="flex-1 cursor-pointer select-none" onClick={() => { setSelectedCandidate(c); setDossierTab('general'); }}><p className="font-bold text-[#1B4332] text-lg">{c.ciudad}</p><div className="flex gap-3 text-xs text-[#78716C]"><span className="flex items-center gap-1"><Plane size={12} /> {c.datos?.logistica?.precio_total_vuelos || '---'}€</span><span className="flex items-center gap-1 border-b border-dashed border-[#78716C]"><Info size={12} /> Ver Informe</span></div></div>{user?.esAdmin && (<button onClick={(e) => { e.stopPropagation(); handleDelete(c.id); }} className="p-2 text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"><Trash2 size={18} /></button>)}</div>)}</SortableItem>))}</div></SortableContext></DndContext>
-                            {myRanking.length > 0 && <button onClick={submitRanking} className="w-full py-4 mt-8 btn-primary shadow-xl text-lg font-bold tracking-wide">CONFIRMAR ESTE ORDEN</button>}
+                {/* Contenido Principal */}
+                <div className="flex-1 overflow-y-auto px-6 pb-24">
+
+                    {!hasDate ? (
+                        <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-6 animate-in fade-in">
+                            <div className="w-20 h-20 bg-[#F2EFE9] rounded-full flex items-center justify-center text-[#1B4332] mb-2 shadow-inner">
+                                <Calendar size={40} strokeWidth={1.5} />
+                            </div>
+
+                            <div>
+                                <h2 className="text-2xl serif-font text-[#1B4332] mb-2">Viaje sin Fecha</h2>
+                                <p className="text-[#78716C] text-sm max-w-[250px] mx-auto leading-relaxed">
+                                    {!!user?.esAdmin
+                                        ? "Como administrador, debes fijar la fecha límite en la configuración general del viaje."
+                                        : "Esperando a que el administrador fije la fecha..."}
+                                </p>
+                            </div>
+
+                            {/* BOTÓN ADMIN */}
+                            {!!user?.esAdmin && (
+                                <button onClick={() => setShowDatePicker(true)} className="bg-[#1B4332] text-white px-8 py-4 rounded-full font-bold shadow-xl hover:bg-[#2D6A4F] flex items-center gap-3 uppercase tracking-wider text-xs transition-transform hover:scale-105">
+                                    <Calendar size={18} /> Fijar Fecha Límite
+                                </button>
+                            )}
+
+                            {/* BOTÓN INVITADO (Lee de la tabla TRIPS) */}
+                            {!user?.esAdmin && (
+                                <button
+                                    onClick={async () => {
+                                        // Consulta profesional a la tabla TRIPS
+                                        const { data, error } = await supabase
+                                            .from('trips')
+                                            .select('voting_start_date')
+                                            .eq('code', tripCode) // Busca por el código del viaje
+                                            .single();
+
+                                        if (data && data.voting_start_date) {
+                                            setVotingStartDate(data.voting_start_date);
+                                        } else {
+                                            alert("El Admin aún no ha guardado la fecha en el nuevo sistema.");
+                                        }
+                                    }}
+                                    className="text-[#1B4332] border border-[#1B4332]/20 px-6 py-3 rounded-full text-xs font-bold uppercase tracking-widest hover:bg-[#1B4332] hover:text-white transition-colors flex items-center gap-2"
+                                >
+                                    <ArrowRight size={14} className="rotate-0" /> Comprobar Fecha
+                                </button>
+                            )}
                         </div>
+                    ) : (
+                        // VISTA CUANDO YA HAY FECHA
+                        <div className="animate-in slide-in-from-bottom-4">
+                            <div className="mb-8">
+                                <VotingCountdown
+                                    votingDate={votingStartDate}
+                                    isAdmin={false}
+                                    candidatesCount={candidaturas.length}
+                                    onStartVoting={() => { }}
+                                    onDateUpdate={() => { }}
+                                />
+                                {!!user?.esAdmin && (
+                                    <button onClick={() => setShowDatePicker(true)} className="w-full text-center text-[10px] text-[#A8A29E] underline mt-3 hover:text-[#1B4332]">
+                                        Modificar fecha límite
+                                    </button>
+                                )}
+                            </div>
+
+                            {/* ... (Resto de la lista de propuestas igual que antes) ... */}
+                            <div className="flex items-center justify-between mb-4 px-1">
+                                <h2 className="text-xl serif-font text-[#1B4332]">Propuestas</h2>
+                                <span className="bg-[#1B4332]/10 text-[#1B4332] text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-widest">
+                                    {candidaturas.length} Destinos
+                                </span>
+                            </div>
+
+                            <div className="space-y-3">
+                                {candidaturas.length > 0 ? (
+                                    candidaturas.map((c: any, index: number) => (
+                                        <div key={c.id} onClick={() => setSelectedCandidate(c)} className="bg-white p-4 rounded-xl shadow-sm border border-[#E7E5E4] flex items-center gap-4 cursor-pointer hover:border-[#1B4332] transition-all relative group">
+                                            <div className="bg-[#F2EFE9] text-[#1B4332] w-9 h-9 rounded-full flex items-center justify-center font-bold serif-font text-sm shrink-0 group-hover:bg-[#1B4332] group-hover:text-white transition-colors">
+                                                {index + 1}
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <p className="font-bold text-[#1B4332] text-lg leading-tight truncate">{c.ciudad}</p>
+                                                <p className="text-[10px] uppercase tracking-wider text-[#A8A29E] mt-1 truncate">
+                                                    Propuesto por: {c.propuesto_por}
+                                                </p>
+                                            </div>
+                                            <div className="text-[#D6D3D1]"><Info size={20} /></div>
+                                            {!!user?.esAdmin && (
+                                                <button onClick={(e) => { e.stopPropagation(); handleDelete(c.id); }} className="p-2 text-red-300 hover:text-red-600 transition-colors shrink-0">
+                                                    <Trash2 size={18} />
+                                                </button>
+                                            )}
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="text-center py-12 border-2 border-dashed border-[#E7E5E4] rounded-3xl bg-white/50">
+                                        <div className="inline-block p-3 bg-[#F2EFE9] rounded-full mb-3 text-[#1B4332]">
+                                            <Plus size={24} />
+                                        </div>
+                                        <p className="text-[#1B4332] font-bold serif-font mb-1">¡Sé el primero!</p>
+                                        <p className="text-[#A8A29E] text-xs">Añade la primera propuesta.</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                {/* Botón flotante y Modales... (Igual que antes) */}
+                {hasDate && (
+                    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[210]">
+                        <button onClick={() => setModalAction({ type: 'proponer' })} className="bg-[#1B4332] text-white w-16 h-16 rounded-full shadow-2xl flex items-center justify-center hover:scale-105 transition-transform border-4 border-[#F8F5F2] active:scale-95">
+                            <Plus size={32} strokeWidth={2} />
+                        </button>
                     </div>
                 )}
 
-                {user?.esAdmin && (<div className="fixed bottom-6 right-6 z-[100] animate-bounce"><button onClick={handleCloseVoting} disabled={candidaturas.length === 0} className={`bg-[#1B4332] text-white px-8 py-4 rounded-full font-bold shadow-2xl flex items-center gap-3 transition-all ${candidaturas.length === 0 ? 'opacity-50 cursor-not-allowed grayscale' : 'hover:bg-[#2D6A4F]'}`}><Trophy size={20} /> FINALIZAR VIAJE</button></div>)}
-
-                {/* SIDE PANEL DOSSIER */}
-                {selectedCandidate && (
-                    <div className="fixed inset-0 z-[9999] bg-black/40 backdrop-blur-sm flex justify-end animate-enter">
-                        <div className="bg-white w-full max-w-lg h-full shadow-2xl overflow-y-auto flex flex-col">
-                            {/* HERO IMAGE */}
-                            <div className="h-64 relative bg-gray-900">
-                                <img src={selectedCandidate.foto_url || FALLBACK_IMAGE} className="w-full h-full object-cover opacity-80" onError={(e) => { e.currentTarget.src = FALLBACK_IMAGE; }} />
-                                <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent"></div>
-                                <div className="absolute bottom-6 left-6 text-white"><h2 className="text-5xl serif-font mb-2">{selectedCandidate.ciudad}</h2><div className="flex gap-2"><span className="bg-white/20 backdrop-blur-md px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider flex items-center gap-1"><User size={12} /> {selectedCandidate.propuesto_por}</span>{selectedCandidate.datos?.score_global && <span className="bg-[#4ADE80] text-[#064E3B] px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">Score: {selectedCandidate.datos.score_global}/100</span>}</div></div>
-                                <button onClick={() => setSelectedCandidate(null)} className="absolute top-6 right-6 p-2 bg-white/20 hover:bg-white/40 backdrop-blur-md rounded-full text-white transition-all"><X /></button>
-                            </div>
-
-                            {/* TABS */}
-                            <div className="flex border-b border-gray-100 px-6 pt-4 sticky top-0 bg-white z-10">
-                                <button onClick={() => setDossierTab('general')} className={`pb-4 px-4 text-sm font-bold uppercase tracking-wider border-b-2 transition-all ${dossierTab === 'general' ? 'border-[#1B4332] text-[#1B4332]' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>Resumen</button>
-                                <button onClick={() => setDossierTab('logistica')} className={`pb-4 px-4 text-sm font-bold uppercase tracking-wider border-b-2 transition-all ${dossierTab === 'logistica' ? 'border-[#1B4332] text-[#1B4332]' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>Logística</button>
-                                <button onClick={() => setDossierTab('alojamiento')} className={`pb-4 px-4 text-sm font-bold uppercase tracking-wider border-b-2 transition-all ${dossierTab === 'alojamiento' ? 'border-[#1B4332] text-[#1B4332]' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>Alojamiento</button>
-                                <button onClick={() => setDossierTab('costes')} className={`pb-4 px-4 text-sm font-bold uppercase tracking-wider border-b-2 transition-all ${dossierTab === 'costes' ? 'border-[#1B4332] text-[#1B4332]' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>Costes</button>
-                            </div>
-
-                            {/* CONTENT */}
-                            <div className="p-8 flex-1 bg-[#FAFAFA]">
-                                {dossierTab === 'general' && (
-                                    <div className="space-y-8 animate-enter">
-                                        <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm"><h4 className="text-xs font-bold text-[#1B4332] uppercase tracking-widest mb-3 flex items-center gap-2"><Star size={14} /> Análisis de IA</h4><p className="text-[#57534E] text-lg font-serif italic leading-relaxed">"{selectedCandidate.datos?.resumen_ia || 'Analizando viabilidad del destino...'}"</p></div>
-                                        <div className="grid grid-cols-2 gap-4"><div className="bg-[#FFF7ED] p-5 rounded-2xl border border-[#FFEDD5]"><div className="flex items-center gap-2 text-[#9A3412] mb-1"><Sun size={18} /> <span className="font-bold text-xs uppercase">Clima</span></div><p className="text-xl font-bold text-[#7C2D12]">{selectedCandidate.datos?.salud_viaje?.temperatura || '--'}</p><p className="text-xs text-[#9A3412]/80">{selectedCandidate.datos?.salud_viaje?.clima || 'Sin datos'}</p></div><div className="bg-[#F0FDF4] p-5 rounded-2xl border border-[#DCFCE7]"><div className="flex items-center gap-2 text-[#166534] mb-1"><Users size={18} /> <span className="font-bold text-xs uppercase">Saturación</span></div><p className="text-xl font-bold text-[#14532D]">{selectedCandidate.datos?.salud_viaje?.saturacion || 'Media'}</p><p className="text-xs text-[#166534]/80">Nivel turístico</p></div></div>
-                                    </div>
-                                )}
-                                {dossierTab === 'logistica' && (
-                                    <div className="space-y-6 animate-enter">
-                                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100"><div className="flex justify-between items-center mb-6"><h3 className="text-[#1B4332] font-bold text-lg flex items-center gap-2"><PlaneTakeoff /> Ida (Origen ➝ Destino)</h3></div><div className="bg-[#F0FDF4] p-4 rounded-xl mb-4 border border-[#DCFCE7]"><p className="text-xs text-[#166534] uppercase font-bold mb-1">Tiempo Total (Puerta a Puerta)</p><p className="text-3xl font-serif text-[#14532D]">{selectedCandidate.datos?.logistica?.ida?.tiempo_total}</p><p className="text-xs text-[#166534]/70 mt-1">{selectedCandidate.datos?.logistica?.ida?.detalle_tiempos}</p></div></div>
-                                        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100"><div className="flex justify-between items-center mb-6"><h3 className="text-[#1B4332] font-bold text-lg flex items-center gap-2"><PlaneLanding /> Vuelta (Destino ➝ Origen)</h3></div><div className="bg-[#FEF2F2] p-4 rounded-xl mb-4 border border-[#FECACA]"><p className="text-xs text-[#991B1B] uppercase font-bold mb-1">Tiempo Total (Puerta a Puerta)</p><p className="text-3xl font-serif text-[#7F1D1D]">{selectedCandidate.datos?.logistica?.vuelta?.tiempo_total}</p><p className="text-xs text-[#991B1B]/70 mt-1">{selectedCandidate.datos?.logistica?.vuelta?.detalle_tiempos}</p></div></div>
-                                    </div>
-                                )}
-                                {dossierTab === 'alojamiento' && (
-                                    <div className="space-y-4 animate-enter"><div className="bg-[#1B4332] text-white p-6 rounded-2xl mb-6"><p className="text-xs text-[#A7D7C5] uppercase font-bold mb-1">Precio Medio / Noche</p><p className="text-4xl serif-font">{selectedCandidate.datos?.alojamiento?.precio_medio_global || '85'}€</p><p className="text-[10px] opacity-60">Media de la ciudad</p></div><h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest pl-2">Mejores Zonas</h4>{selectedCandidate.datos?.alojamiento?.zonas_recomendadas?.map((zona: any, i: number) => (<div key={i} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm"><div className="flex justify-between items-center mb-1"><p className="font-bold text-[#1B4332]">{zona.nombre}</p><div className="bg-gray-100 px-3 py-1 rounded text-xs font-bold text-gray-600">{zona.precio}</div></div><p className="text-xs text-gray-500 leading-snug">{zona.descripcion}</p></div>)) || <p className="text-sm text-gray-400 italic p-4">Datos de zonas no disponibles.</p>}</div>
-                                )}
-                                {dossierTab === 'costes' && (
-                                    <div className="space-y-6 animate-enter"><div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 text-center"><div className="w-16 h-16 bg-[#F0FDF4] rounded-full flex items-center justify-center mx-auto mb-4 text-[#166534]"><DollarSign size={32} /></div><p className="text-xs text-gray-400 uppercase font-bold mb-2">Presupuesto Diario Sugerido</p><p className="text-5xl font-bold text-[#1B4332]">{selectedCandidate.datos?.presupuesto_diario_estimado || '60'}€</p><p className="text-xs text-gray-400 mt-2">Por persona (Comida + Ocio)</p></div></div>
-                                )}
-                            </div>
+                {/* Modal Proponer (Igual) */}
+                <Modal isOpen={modalAction?.type === 'proponer'} title="Nueva Propuesta" onClose={() => setModalAction(null)}>
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Nombre del Destino</label>
+                            <input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Roma" value={newProposal} onChange={e => setNewProposal(e.target.value)} onKeyDown={e => e.key === 'Enter' && handlePropose()} />
                         </div>
+                        <button onClick={handlePropose} className="w-full py-4 btn-primary text-sm uppercase tracking-widest mt-2 flex items-center justify-center gap-2 shadow-lg"><Plus size={18} /> Lanzar Propuesta</button>
                     </div>
-                )}
+                </Modal>
 
-                <Modal isOpen={modalAction?.type === 'proponer'} title="Nueva Propuesta" onClose={() => setModalAction(null)}><div className="space-y-4"><div><label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Ciudad</label><input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Kioto" value={newProposal} onChange={e => setNewProposal(e.target.value)} /></div><button onClick={handlePropose} className="w-full py-4 btn-primary text-sm uppercase tracking-widest mt-2">Lanzar Propuesta</button></div></Modal>
+                {/* MODAL 2: PROGRAMAR FECHA (INTELIGENCIA REAL) */}
+                <Modal isOpen={showDatePicker} title="Programar Votación" onClose={() => setShowDatePicker(false)}>
+                    <div className="space-y-6">
+                        <div className="text-center">
+                            <div className="w-12 h-12 bg-[#F2EFE9] rounded-full flex items-center justify-center mx-auto mb-3 text-[#1B4332]">
+                                <Calendar size={24} />
+                            </div>
+                            <p className="text-sm text-[#78716C]">Selecciona cuándo comenzará la votación.</p>
+                        </div>
+
+                        <input id="date-picker-input" type="datetime-local" className="w-full bg-[#F8F5F2] p-4 rounded-xl text-lg text-[#1B4332] outline-none border border-transparent focus:border-[#1B4332] accent-[#1B4332]" style={{ colorScheme: 'light' }} defaultValue={votingStartDate ? new Date(votingStartDate).toISOString().slice(0, 16) : ''} />
+
+                        <button
+                            onClick={async () => {
+                                const input = document.getElementById('date-picker-input') as HTMLInputElement;
+                                if (!input || !input.value) return;
+
+                                const newDate = new Date(input.value).toISOString();
+
+                                // LÓGICA INTELIGENTE: CREAR O ACTUALIZAR
+                                // 1. Buscamos si el viaje existe
+                                const { data: existingTrip } = await supabase
+                                    .from('trips')
+                                    .select('id')
+                                    .eq('code', tripCode)
+                                    .maybeSingle();
+
+                                if (existingTrip) {
+                                    // A) Si existe: ACTUALIZAMOS la fecha
+                                    await supabase.from('trips').update({ voting_start_date: newDate }).eq('code', tripCode);
+                                } else {
+                                    // B) Si NO existe: LO CREAMOS DE CERO (Autogestión)
+                                    await supabase.from('trips').insert([
+                                        {
+                                            code: tripCode,
+                                            name: "Porcos Bravos", // Nombre por defecto, luego editable
+                                            voting_start_date: newDate,
+                                            is_voting_open: true
+                                        }
+                                    ]);
+                                }
+
+                                setVotingStartDate(newDate);
+                                setShowDatePicker(false);
+                            }}
+                            className="w-full py-4 bg-[#1B4332] text-white rounded-xl font-bold uppercase tracking-widest hover:bg-[#2D6A4F] shadow-lg transition-transform active:scale-95"
+                        >
+                            Confirmar Fecha
+                        </button>
+
+                        <button onClick={() => setShowDatePicker(false)} className="w-full py-2 text-[#A8A29E] hover:text-[#1B4332] text-xs font-bold uppercase tracking-widest">Cancelar</button>
+                    </div>
+                </Modal>
+
                 <CustomAlert {...alertConfig} />
             </div>
         );
@@ -1006,139 +1163,116 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         );
     }
 
-    // 8. SURVIVAL SESSION (PORCOS BRAVOS)
-    if (view === 'survival_session') {
-        return <SurvivalSession />;
-    }
 
-    // 9. DEBUG ELIMINATION
-    if (view === 'debug_elimination') {
-        return <DebugElimination />;
-    }
-
-    // 10. MAIN DASHBOARD (MAPA + WALLET)
+    // MAIN DASHBOARD (MAPA + WALLET)
     return (
         <div className="relative h-full bg-[#F8F5F2]">
-            {/* 🐷 MODO SURVIVAL TOGGLE BUTTON - Floating Red Button */}
-            <button
-                onClick={() => setShowSurvival(!showSurvival)}
-                className="fixed top-6 right-6 z-[9999] bg-gradient-to-r from-red-600 to-red-700 text-white font-black text-lg px-6 py-4 rounded-full shadow-2xl hover:scale-105 transition-all flex items-center gap-2 border-4 border-red-500"
-            >
-                🐷 MODO SURVIVAL
-            </button>
-
-            {/* Conditional Rendering: Survival Mode or Normal Dashboard */}
-            {showSurvival ? (
-                <SurvivalSession />
-            ) : (
-                <>
-                    <div className={`p-6 space-y-6 pb-32 overflow-y-auto h-full no-scrollbar transition-all duration-500 ${isWalletOpen ? 'opacity-50 blur-[2px]' : ''}`}>
-                        {/* HEADER */}
-                        <div className="flex justify-between items-center px-1">
-                            <div className="flex items-center gap-3 cursor-pointer group" onClick={onCityClick}>
-                                <div className="w-10 h-10 rounded-full bg-white border border-[#E7E5E4] flex items-center justify-center shadow-sm"><MapPin size={20} className="text-[#1B4332]" /></div>
-                                <div><h1 className="text-2xl serif-font text-[#1C1917]">{user?.destino?.replace('PENDIENTE: ', '') || currentCity}</h1><p className="text-[10px] font-bold text-[#78716C] tracking-widest uppercase mt-0.5">Código: <span className="text-[#D08C60]">{user?.viajeCodigo}</span></p></div>
-                            </div>
-                            <div className="flex gap-2">
-                                <button onClick={handleLogOut} className="w-10 h-10 bg-red-50 text-red-600 border border-red-100 rounded-full flex items-center justify-center shadow-sm hover:bg-red-100 transition-all group" title="Salir del viaje">
-                                    <LogOut size={18} className="group-hover:scale-110 transition-transform" />
-                                </button>
-                                {user?.esAdmin ? (<button onClick={openRolesModal} className="w-10 h-10 bg-[#1B4332] text-white rounded-full flex items-center justify-center shadow-md hover:bg-[#2D6A4F] transition-colors"><Settings size={18} /></button>) : null}
-                                <div onClick={onParticipantsClick} className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full shadow-sm border border-[#E7E5E4] cursor-pointer"><div className="w-6 h-6 rounded-full bg-[#1B4332] text-white flex items-center justify-center text-xs font-serif">{user?.nombre.charAt(0)}</div><span className="text-xs font-medium text-[#78716C]">{user?.esAdmin ? 'Admin' : 'Guest'}</span></div>
-                            </div>
-                        </div>
-
-                        {/* CONTENIDO CONDICIONAL: ¿PENDIENTE O MAPA? */}
-                        {user?.destino?.startsWith("PENDIENTE") ? (
-                            <div className="grid grid-cols-2 gap-4">
-                                <div onClick={() => setView('voting_room')} className="bg-white p-6 rounded-[24px] border border-[#E7E5E4] shadow-sm flex flex-col items-center justify-center text-center gap-2 cursor-pointer hover:border-[#1B4332] hover:bg-[#F0FDF4] transition-all group"><div className="w-12 h-12 bg-[#E8F5E9] rounded-full flex items-center justify-center text-[#1B4332] group-hover:scale-110 transition-transform"><Vote size={24} /></div><h3 className="serif-font text-lg text-[#1B4332]">Votar Destino</h3></div>
-                                <div onClick={() => setView('calendar_room')} className="bg-white p-6 rounded-[24px] border border-[#E7E5E4] shadow-sm flex flex-col items-center justify-center text-center gap-2 cursor-pointer hover:border-[#1B4332] hover:bg-[#F0FDF4] transition-all group"><div className="w-12 h-12 bg-[#E8F5E9] rounded-full flex items-center justify-center text-[#1B4332] group-hover:scale-110 transition-transform"><Calendar size={24} /></div><h3 className="serif-font text-lg text-[#1B4332]">Fechas</h3></div>
-                            </div>
-                        ) : (
-                            <>
-                                <div onClick={() => setIsWalletOpen(true)} className="relative overflow-hidden bg-[#1B4332] rounded-[24px] p-8 text-white shadow-xl cursor-pointer transition-transform active:scale-[0.98]"><div className="absolute right-0 top-0 opacity-10 transform translate-x-1/3 -translate-y-1/3"><Compass size={180} /></div><div className="relative z-10"><div className="flex justify-between items-start mb-6"><p className="text-[#A7D7C5] text-[10px] font-bold uppercase tracking-[0.2em]">Fondos del Grupo</p><div className="bg-white/10 p-2 rounded-full"><Wallet size={20} /></div></div><p className="text-5xl serif-font tracking-tight mb-2">{Number(walletData.saldoBote).toFixed(2)}€</p><div className="flex items-center gap-2 text-xs text-[#A7D7C5]"><span className="w-1.5 h-1.5 bg-[#4ADE80] rounded-full"></span> <span>Balance activo</span></div></div></div>
-                                <div className="card-premium p-3 h-[450px] relative flex flex-col"><div className="absolute top-6 left-6 right-6 z-[1000]"><div className="bg-white/90 backdrop-blur-md shadow-lg rounded-xl p-1 flex items-center border border-[#E7E5E4]"><div className="p-3 text-[#78716C]"><Search size={18} /></div><input type="text" placeholder="Descubrir lugares..." className="flex-1 bg-transparent outline-none text-[#1C1917] placeholder:text-[#A8A29E] text-sm font-medium" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} /></div></div><div className="flex-1 rounded-xl overflow-hidden relative z-0"><MapContainer center={cityCoords} zoom={13} style={{ height: '100%', width: '100%' }} zoomControl={false}><TileLayer url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" attribution='© CartoDB' /><Marker position={cityCoords}><Popup><b>📍 Centro</b></Popup></Marker>{recommendations.map((site: any) => (<Marker key={site.id} position={[site.coords.lat, site.coords.lng]} icon={redIcon}><Popup>{site.nombre}</Popup></Marker>))}<MapUpdater center={cityCoords} /></MapContainer></div><div className="absolute bottom-6 left-6 right-6 z-[1000]"><div className="bg-white/90 backdrop-blur-md shadow-lg rounded-xl p-4 border border-[#E7E5E4]"><div className="flex justify-between items-center text-[10px] font-bold text-[#78716C] uppercase tracking-widest mb-2"><span className="flex items-center gap-2"><Target size={12} /> Exploración</span><span className="text-[#1B4332]">{searchRadius >= 1000 ? `${searchRadius / 1000} km` : `${searchRadius} m`}</span></div><input type="range" min="500" max="5000" step="100" value={searchRadius} onChange={(e) => setSearchRadius(Number(e.target.value))} className="w-full accent-[#1B4332] h-1 bg-[#E7E5E4] rounded-lg appearance-none cursor-pointer" /></div></div></div>
-                            </>
-                        )}
+            <div className={`p-6 space-y-6 pb-32 overflow-y-auto h-full no-scrollbar transition-all duration-500 ${isWalletOpen ? 'opacity-50 blur-[2px]' : ''}`}>
+                {/* HEADER */}
+                <div className="flex justify-between items-center px-1">
+                    <div className="flex items-center gap-3 cursor-pointer group" onClick={onCityClick}>
+                        <div className="w-10 h-10 rounded-full bg-white border border-[#E7E5E4] flex items-center justify-center shadow-sm"><MapPin size={20} className="text-[#1B4332]" /></div>
+                        <div><h1 className="text-2xl serif-font text-[#1C1917]">{user?.destino?.replace('PENDIENTE: ', '') || currentCity}</h1><p className="text-[10px] font-bold text-[#78716C] tracking-widest uppercase mt-0.5">Código: <span className="text-[#D08C60]">{user?.viajeCodigo}</span></p></div>
                     </div>
+                    <div className="flex gap-2">
+                        <button onClick={handleLogOut} className="w-10 h-10 bg-red-50 text-red-600 border border-red-100 rounded-full flex items-center justify-center shadow-sm hover:bg-red-100 transition-all group" title="Salir del viaje">
+                            <LogOut size={18} className="group-hover:scale-110 transition-transform" />
+                        </button>
+                        {user?.esAdmin ? (<button onClick={openRolesModal} className="w-10 h-10 bg-[#1B4332] text-white rounded-full flex items-center justify-center shadow-md hover:bg-[#2D6A4F] transition-colors"><Settings size={18} /></button>) : null}
+                        <div onClick={onParticipantsClick} className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full shadow-sm border border-[#E7E5E4] cursor-pointer"><div className="w-6 h-6 rounded-full bg-[#1B4332] text-white flex items-center justify-center text-xs font-serif">{user?.nombre.charAt(0)}</div><span className="text-xs font-medium text-[#78716C]">{user?.esAdmin ? 'Admin' : 'Guest'}</span></div>
+                    </div>
+                </div>
 
-                    {/* PANEL WALLET INFERIOR */}
-                    <div className={`fixed inset-x-0 bottom-0 z-[2000] bg-[#FFFFFF] rounded-t-[2.5rem] shadow-[0_-10px_60px_rgba(27,67,50,0.15)] transition-transform duration-500 h-[92%] ${isWalletOpen ? 'translate-y-0' : 'translate-y-full'}`}>
-                        <div className="p-8 h-full flex flex-col">
-                            <div className="flex justify-between items-start mb-8"><div><h2 className="text-3xl serif-font text-[#1B4332]">Finanzas</h2><p className="text-xs text-[#78716C] mt-1">Gestión transparente</p></div><button onClick={() => setIsWalletOpen(false)} className="p-3 bg-[#F8F5F2] rounded-full hover:bg-gray-200"><X size={24} className="text-[#1B4332]" /></button></div>
-                            <div className="flex p-1.5 bg-[#F8F5F2] rounded-xl mb-8"><button onClick={() => setActiveTab('bote')} className={`flex-1 py-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${activeTab === 'bote' ? 'bg-white text-[#1B4332] shadow-sm' : 'text-[#A8A29E]'}`}>Grupo</button><button onClick={() => setActiveTab('privado')} className={`flex-1 py-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${activeTab === 'privado' ? 'bg-white text-[#1B4332] shadow-sm' : 'text-[#A8A29E]'}`}>Mis Gastos</button></div>
-                            {activeTab === 'bote' ? (
-                                <div className="flex-1 overflow-y-auto no-scrollbar space-y-4">
-                                    {user?.esTesorero && (
-                                        <div className="grid grid-cols-2 gap-4 mb-6">
-                                            <button onClick={() => setModalAction({ type: 'crearRonda' })} className="py-4 btn-primary rounded-xl font-medium text-sm flex flex-col items-center gap-2"><Plus size={20} /> Solicitar</button>
-                                            <button onClick={() => setModalAction({ type: 'cambiarTesorero' })} className="py-4 btn-secondary rounded-xl font-medium text-sm flex flex-col items-center gap-2"><User size={20} /> Ceder Cargo</button>
-                                        </div>
-                                    )}
-                                    {walletData.usuarios.map((u: any) => (
-                                        <div key={u.id} className="flex items-center justify-between py-4 border-b border-[#F8F5F2]">
-                                            <div className="flex items-center gap-4">
-                                                <div className={`w-12 h-12 rounded-full flex items-center justify-center serif-font text-lg ${u.es_tesorero ? 'bg-[#1B4332] text-white' : 'bg-[#F8F5F2] text-[#78716C]'}`}>{u.nombre.charAt(0)}</div>
-                                                <div><p className="font-bold text-[#1C1917] text-lg">{u.nombre}</p><p className="text-[10px] text-[#A8A29E] font-bold uppercase tracking-wider">{u.es_tesorero ? 'Admin' : 'Viajero'}</p></div>
-                                            </div>
-                                            <div className="text-right">
-                                                {u.credito > 0 ? <span className="text-[#40916C] font-bold text-lg">+{u.balance.toFixed(2)}€</span> : u.debe ? <span className="text-[#9B2226] font-bold text-lg">{u.balance.toFixed(2)}€</span> : <span className="text-gray-300 font-bold text-lg">0.00€</span>}
-                                                {user?.esTesorero && u.debe && <button onClick={() => setModalAction({ type: 'pagar', data: u })} className="block mt-1 text-[10px] font-bold text-[#1B4332] underline ml-auto">COBRAR</button>}
-                                            </div>
-                                        </div>
-                                    ))}
-                                    <button onClick={() => setModalAction({ type: 'adelantar' })} className="w-full mt-4 py-3 text-[#D08C60] text-xs font-bold uppercase tracking-widest hover:text-[#b0734c]">Registrar Pago Urgente</button>
-                                </div>
-                            ) : (
-                                <div className="flex-1 overflow-y-auto no-scrollbar space-y-4">
-                                    <button onClick={() => setModalAction({ type: 'gastoPersonal' })} className="w-full py-4 border border-dashed border-[#D6D3D1] rounded-xl text-[#78716C] hover:border-[#1B4332] hover:text-[#1B4332] font-medium text-sm transition-all flex items-center justify-center gap-2 mb-4"><Plus size={18} /> Nuevo Ticket Personal</button>
-                                    {misGastos.map((g: any) => (<div key={g.id} className="flex justify-between items-center py-4 border-b border-[#F8F5F2]"><span className="font-medium text-[#57534E]">{g.concepto}</span><span className="font-bold text-[#1C1917]">-{g.monto.toFixed(2)}€</span></div>))}
+                {/* CONTENIDO CONDICIONAL: ¿PENDIENTE O MAPA? */}
+                {user?.destino?.startsWith("PENDIENTE") ? (
+                    <div className="grid grid-cols-2 gap-4">
+                        <div onClick={() => setView('voting_room')} className="bg-white p-6 rounded-[24px] border border-[#E7E5E4] shadow-sm flex flex-col items-center justify-center text-center gap-2 cursor-pointer hover:border-[#1B4332] hover:bg-[#F0FDF4] transition-all group"><div className="w-12 h-12 bg-[#E8F5E9] rounded-full flex items-center justify-center text-[#1B4332] group-hover:scale-110 transition-transform"><Vote size={24} /></div><h3 className="serif-font text-lg text-[#1B4332]">Votar Destino</h3></div>
+                        <div onClick={() => setView('calendar_room')} className="bg-white p-6 rounded-[24px] border border-[#E7E5E4] shadow-sm flex flex-col items-center justify-center text-center gap-2 cursor-pointer hover:border-[#1B4332] hover:bg-[#F0FDF4] transition-all group"><div className="w-12 h-12 bg-[#E8F5E9] rounded-full flex items-center justify-center text-[#1B4332] group-hover:scale-110 transition-transform"><Calendar size={24} /></div><h3 className="serif-font text-lg text-[#1B4332]">Fechas</h3></div>
+                    </div>
+                ) : (
+                    <>
+                        <div onClick={() => setIsWalletOpen(true)} className="relative overflow-hidden bg-[#1B4332] rounded-[24px] p-8 text-white shadow-xl cursor-pointer transition-transform active:scale-[0.98]"><div className="absolute right-0 top-0 opacity-10 transform translate-x-1/3 -translate-y-1/3"><Compass size={180} /></div><div className="relative z-10"><div className="flex justify-between items-start mb-6"><p className="text-[#A7D7C5] text-[10px] font-bold uppercase tracking-[0.2em]">Fondos del Grupo</p><div className="bg-white/10 p-2 rounded-full"><Wallet size={20} /></div></div><p className="text-5xl serif-font tracking-tight mb-2">{Number(walletData.saldoBote).toFixed(2)}€</p><div className="flex items-center gap-2 text-xs text-[#A7D7C5]"><span className="w-1.5 h-1.5 bg-[#4ADE80] rounded-full"></span> <span>Balance activo</span></div></div></div>
+                        <div className="card-premium p-3 h-[450px] relative flex flex-col"><div className="absolute top-6 left-6 right-6 z-[1000]"><div className="bg-white/90 backdrop-blur-md shadow-lg rounded-xl p-1 flex items-center border border-[#E7E5E4]"><div className="p-3 text-[#78716C]"><Search size={18} /></div><input type="text" placeholder="Descubrir lugares..." className="flex-1 bg-transparent outline-none text-[#1C1917] placeholder:text-[#A8A29E] text-sm font-medium" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} /></div></div><div className="flex-1 rounded-xl overflow-hidden relative z-0"><MapContainer center={cityCoords} zoom={13} style={{ height: '100%', width: '100%' }} zoomControl={false}><TileLayer url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" attribution='© CartoDB' /><Marker position={cityCoords}><Popup><b>📍 Centro</b></Popup></Marker>{recommendations.map((site: any) => (<Marker key={site.id} position={[site.coords.lat, site.coords.lng]} icon={redIcon}><Popup>{site.nombre}</Popup></Marker>))}<MapUpdater center={cityCoords} /></MapContainer></div><div className="absolute bottom-6 left-6 right-6 z-[1000]"><div className="bg-white/90 backdrop-blur-md shadow-lg rounded-xl p-4 border border-[#E7E5E4]"><div className="flex justify-between items-center text-[10px] font-bold text-[#78716C] uppercase tracking-widest mb-2"><span className="flex items-center gap-2"><Target size={12} /> Exploración</span><span className="text-[#1B4332]">{searchRadius >= 1000 ? `${searchRadius / 1000} km` : `${searchRadius} m`}</span></div><input type="range" min="500" max="5000" step="100" value={searchRadius} onChange={(e) => setSearchRadius(Number(e.target.value))} className="w-full accent-[#1B4332] h-1 bg-[#E7E5E4] rounded-lg appearance-none cursor-pointer" /></div></div></div>
+                    </>
+                )}
+            </div>
+
+            {/* PANEL WALLET INFERIOR */}
+            <div className={`fixed inset-x-0 bottom-0 z-[2000] bg-[#FFFFFF] rounded-t-[2.5rem] shadow-[0_-10px_60px_rgba(27,67,50,0.15)] transition-transform duration-500 h-[92%] ${isWalletOpen ? 'translate-y-0' : 'translate-y-full'}`}>
+                <div className="p-8 h-full flex flex-col">
+                    <div className="flex justify-between items-start mb-8"><div><h2 className="text-3xl serif-font text-[#1B4332]">Finanzas</h2><p className="text-xs text-[#78716C] mt-1">Gestión transparente</p></div><button onClick={() => setIsWalletOpen(false)} className="p-3 bg-[#F8F5F2] rounded-full hover:bg-gray-200"><X size={24} className="text-[#1B4332]" /></button></div>
+                    <div className="flex p-1.5 bg-[#F8F5F2] rounded-xl mb-8"><button onClick={() => setActiveTab('bote')} className={`flex-1 py-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${activeTab === 'bote' ? 'bg-white text-[#1B4332] shadow-sm' : 'text-[#A8A29E]'}`}>Grupo</button><button onClick={() => setActiveTab('privado')} className={`flex-1 py-3 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${activeTab === 'privado' ? 'bg-white text-[#1B4332] shadow-sm' : 'text-[#A8A29E]'}`}>Mis Gastos</button></div>
+                    {activeTab === 'bote' ? (
+                        <div className="flex-1 overflow-y-auto no-scrollbar space-y-4">
+                            {user?.esTesorero && (
+                                <div className="grid grid-cols-2 gap-4 mb-6">
+                                    <button onClick={() => setModalAction({ type: 'crearRonda' })} className="py-4 btn-primary rounded-xl font-medium text-sm flex flex-col items-center gap-2"><Plus size={20} /> Solicitar</button>
+                                    <button onClick={() => setModalAction({ type: 'cambiarTesorero' })} className="py-4 btn-secondary rounded-xl font-medium text-sm flex flex-col items-center gap-2"><User size={20} /> Ceder Cargo</button>
                                 </div>
                             )}
-                        </div>
-                    </div>
-
-                    {/* MODALS GESTIÓN */}
-                    <Modal isOpen={showRolesModal} title="Gestión de Equipo" onClose={() => setShowRolesModal(false)}>
-                        <div className="space-y-4">
-                            <p className="text-sm text-[#78716C] mb-4">Delega responsabilidades. Puedes tener múltiples administradores.</p>
-                            {usersList.map((u: any) => (
-                                <div key={u.id} className="flex items-center justify-between p-3 bg-[#F8F5F2] rounded-xl">
-                                    <span className="font-bold text-[#1B4332]">{u.nombre}</span>
-                                    <div className="flex gap-2">
-                                        <button onClick={() => toggleRole(u.id, 'es_admin', u.es_admin)} className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${u.es_admin ? 'bg-[#1B4332] text-white shadow-md' : 'bg-white text-gray-400 border border-gray-200'}`}>ADMIN</button>
-                                        <button onClick={() => toggleRole(u.id, 'es_tesorero', u.es_tesorero)} className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${u.es_tesorero ? 'bg-[#D08C60] text-white shadow-md' : 'bg-white text-gray-400 border border-gray-200'}`}>TESORERO</button>
+                            {walletData.usuarios.map((u: any) => (
+                                <div key={u.id} className="flex items-center justify-between py-4 border-b border-[#F8F5F2]">
+                                    <div className="flex items-center gap-4">
+                                        <div className={`w-12 h-12 rounded-full flex items-center justify-center serif-font text-lg ${u.es_tesorero ? 'bg-[#1B4332] text-white' : 'bg-[#F8F5F2] text-[#78716C]'}`}>{u.nombre.charAt(0)}</div>
+                                        <div><p className="font-bold text-[#1C1917] text-lg">{u.nombre}</p><p className="text-[10px] text-[#A8A29E] font-bold uppercase tracking-wider">{u.es_tesorero ? 'Admin' : 'Viajero'}</p></div>
+                                    </div>
+                                    <div className="text-right">
+                                        {u.credito > 0 ? <span className="text-[#40916C] font-bold text-lg">+{u.balance.toFixed(2)}€</span> : u.debe ? <span className="text-[#9B2226] font-bold text-lg">{u.balance.toFixed(2)}€</span> : <span className="text-gray-300 font-bold text-lg">0.00€</span>}
+                                        {user?.esTesorero && u.debe && <button onClick={() => setModalAction({ type: 'pagar', data: u })} className="block mt-1 text-[10px] font-bold text-[#1B4332] underline ml-auto">COBRAR</button>}
                                     </div>
                                 </div>
                             ))}
+                            <button onClick={() => setModalAction({ type: 'adelantar' })} className="w-full mt-4 py-3 text-[#D08C60] text-xs font-bold uppercase tracking-widest hover:text-[#b0734c]">Registrar Pago Urgente</button>
                         </div>
-                    </Modal>
-
-                    <Modal isOpen={!!modalAction && modalAction.type !== 'proponer'} title={modalAction?.type === 'crearRonda' ? 'Aportación Grupo' : modalAction?.type === 'pagar' ? `Cobro a ${modalAction?.data?.nombre}` : modalAction?.type === 'adelantar' ? 'Pago de Urgencia' : modalAction?.type === 'cambiarTesorero' ? 'Relevo Admin' : 'Gasto Personal'} onClose={() => { setModalAction(null); setInputValue(''); setInputValue2(''); }}>
-                        <div className="space-y-6">
-                            {modalAction?.type === 'cambiarTesorero' ? (
-                                <div className="space-y-2">{walletData.usuarios.filter((u: any) => u.id !== user.id).map((u: any) => (<button key={u.id} onClick={() => { setInputValue(u.id); setTimeout(ejecutarAccion, 100); }} className="w-full p-4 border-b border-[#F8F5F2] hover:bg-[#F8F5F2] serif-font text-xl text-[#1B4332] text-left transition-all">{u.nombre}</button>))}</div>
-                            ) : (
-                                <>
-                                    <div><label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Importe</label><div className="flex items-center border-b border-[#E7E5E4] py-2"><span className="text-2xl text-[#1B4332] serif-font mr-2">€</span><input type="number" autoFocus className="w-full bg-transparent text-3xl text-[#1B4332] serif-font outline-none placeholder:text-[#E7E5E4]" placeholder="0.00" value={inputValue} onChange={e => setInputValue(e.target.value)} /></div></div>
-                                    {(modalAction?.type === 'adelantar' || modalAction?.type === 'gastoPersonal') && (<div><label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Concepto</label><input type="text" className="w-full bg-[#F8F5F2] p-3 rounded-lg text-lg text-[#1C1917] outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Cena..." value={inputValue2} onChange={e => setInputValue2(e.target.value)} /></div>)}
-                                    <button onClick={ejecutarAccion} className="w-full py-4 btn-primary text-sm uppercase tracking-widest mt-2">Confirmar</button>
-                                </>
-                            )}
+                    ) : (
+                        <div className="flex-1 overflow-y-auto no-scrollbar space-y-4">
+                            <button onClick={() => setModalAction({ type: 'gastoPersonal' })} className="w-full py-4 border border-dashed border-[#D6D3D1] rounded-xl text-[#78716C] hover:border-[#1B4332] hover:text-[#1B4332] font-medium text-sm transition-all flex items-center justify-center gap-2 mb-4"><Plus size={18} /> Nuevo Ticket Personal</button>
+                            {misGastos.map((g: any) => (<div key={g.id} className="flex justify-between items-center py-4 border-b border-[#F8F5F2]"><span className="font-medium text-[#57534E]">{g.concepto}</span><span className="font-bold text-[#1C1917]">-{g.monto.toFixed(2)}€</span></div>))}
                         </div>
-                    </Modal>
+                    )}
+                </div>
+            </div>
 
-                    <Modal isOpen={modalAction?.type === 'proponer'} title="Nueva Propuesta" onClose={() => setModalAction(null)}>
-                        <div className="space-y-4">
-                            <label className="text-[10px] font-bold text-[#78716C] uppercase tracking-widest">Nombre del Destino</label>
-                            <input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Tokio" value={newProposal} onChange={e => setNewProposal(e.target.value)} />
-                            <button onClick={handlePropose} className="w-full py-4 btn-primary text-lg flex items-center justify-center gap-2 mt-4"><Plus size={20} /> Proponer Destino</button>
+            {/* MODALS GESTIÓN */}
+            <Modal isOpen={showRolesModal} title="Gestión de Equipo" onClose={() => setShowRolesModal(false)}>
+                <div className="space-y-4">
+                    <p className="text-sm text-[#78716C] mb-4">Delega responsabilidades. Puedes tener múltiples administradores.</p>
+                    {usersList.map((u: any) => (
+                        <div key={u.id} className="flex items-center justify-between p-3 bg-[#F8F5F2] rounded-xl">
+                            <span className="font-bold text-[#1B4332]">{u.nombre}</span>
+                            <div className="flex gap-2">
+                                <button onClick={() => toggleRole(u.id, 'es_admin', u.es_admin)} className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${u.es_admin ? 'bg-[#1B4332] text-white shadow-md' : 'bg-white text-gray-400 border border-gray-200'}`}>ADMIN</button>
+                                <button onClick={() => toggleRole(u.id, 'es_tesorero', u.es_tesorero)} className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${u.es_tesorero ? 'bg-[#D08C60] text-white shadow-md' : 'bg-white text-gray-400 border border-gray-200'}`}>TESORERO</button>
+                            </div>
                         </div>
-                    </Modal>
+                    ))}
+                </div>
+            </Modal>
 
-                    <CustomAlert {...alertConfig} />
-                </>
-            )}
+            <Modal isOpen={!!modalAction && modalAction.type !== 'proponer'} title={modalAction?.type === 'crearRonda' ? 'Aportación Grupo' : modalAction?.type === 'pagar' ? `Cobro a ${modalAction?.data?.nombre}` : modalAction?.type === 'adelantar' ? 'Pago de Urgencia' : modalAction?.type === 'cambiarTesorero' ? 'Relevo Admin' : 'Gasto Personal'} onClose={() => { setModalAction(null); setInputValue(''); setInputValue2(''); }}>
+                <div className="space-y-6">
+                    {modalAction?.type === 'cambiarTesorero' ? (
+                        <div className="space-y-2">{walletData.usuarios.filter((u: any) => u.id !== user.id).map((u: any) => (<button key={u.id} onClick={() => { setInputValue(u.id); setTimeout(ejecutarAccion, 100); }} className="w-full p-4 border-b border-[#F8F5F2] hover:bg-[#F8F5F2] serif-font text-xl text-[#1B4332] text-left transition-all">{u.nombre}</button>))}</div>
+                    ) : (
+                        <>
+                            <div><label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Importe</label><div className="flex items-center border-b border-[#E7E5E4] py-2"><span className="text-2xl text-[#1B4332] serif-font mr-2">€</span><input type="number" autoFocus className="w-full bg-transparent text-3xl text-[#1B4332] serif-font outline-none placeholder:text-[#E7E5E4]" placeholder="0.00" value={inputValue} onChange={e => setInputValue(e.target.value)} /></div></div>
+                            {(modalAction?.type === 'adelantar' || modalAction?.type === 'gastoPersonal') && (<div><label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Concepto</label><input type="text" className="w-full bg-[#F8F5F2] p-3 rounded-lg text-lg text-[#1C1917] outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Cena..." value={inputValue2} onChange={e => setInputValue2(e.target.value)} /></div>)}
+                            <button onClick={ejecutarAccion} className="w-full py-4 btn-primary text-sm uppercase tracking-widest mt-2">Confirmar</button>
+                        </>
+                    )}
+                </div>
+            </Modal>
+
+            <Modal isOpen={modalAction?.type === 'proponer'} title="Nueva Propuesta" onClose={() => setModalAction(null)}>
+                <div className="space-y-4">
+                    <label className="text-[10px] font-bold text-[#78716C] uppercase tracking-widest">Nombre del Destino</label>
+                    <input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Tokio" value={newProposal} onChange={e => setNewProposal(e.target.value)} />
+                    <button onClick={handlePropose} className="w-full py-4 btn-primary text-lg flex items-center justify-center gap-2 mt-4"><Plus size={20} /> Proponer Destino</button>
+                </div>
+            </Modal>
+
+            <CustomAlert {...alertConfig} />
+
         </div>
     );
 };

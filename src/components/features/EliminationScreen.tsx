@@ -1,13 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 
-interface Props {
-    phase: 'purga' | 'knockout' | 'final';
-    eliminatedCities: string[];
-    onComplete: () => void;
-}
-
-export const EliminationScreen: React.FC<Props> = ({ phase, eliminatedCities, onComplete }) => {
+export const EliminationScreen = ({ candidaturas, user, onVote }: any) => {
+    // Lógica temporal: detectar fase automáticamente
+    const activeCities = candidaturas?.filter((c: any) => !c.is_eliminated) || [];
+    const phase = activeCities.length > 3 ? 'purga' : activeCities.length === 3 ? 'knockout' : 'final';
+    const eliminatedCities: string[] = []; // Por ahora vacío, se poblará con lógica real
+    const onComplete = () => onVote(); // Callback cuando termine la animación
     const [visible, setVisible] = useState(true);
 
     useEffect(() => {
