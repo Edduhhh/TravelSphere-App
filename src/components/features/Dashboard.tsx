@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Wallet, Search, X, Plus, User, LogIn, LogOut, Target, MapPin, ArrowRight, Compass, Users, Vote, Heart, Plane, Clock, Sun, Calendar, ChevronLeft, ChevronRight, Check, Trophy, ListOrdered, Star, AlertTriangle, Gavel, DollarSign, Hotel, Thermometer, Info, GripVertical, Map, BarChart3, PieChart, PlaneLanding, PlaneTakeoff, Settings, Timer, Loader2, Trash2 } from 'lucide-react';
+import { Wallet, Search, X, Plus, User, LogIn, LogOut, Target, MapPin, ArrowRight, Compass, Users, Vote, Heart, Plane, Clock, Sun, Calendar, ChevronLeft, ChevronRight, Check, Trophy, ListOrdered, Star, AlertTriangle, Gavel, DollarSign, Hotel, Thermometer, Info, GripVertical, Map, BarChart3, PieChart, PlaneLanding, PlaneTakeoff, Settings, Timer, Loader2, Trash2, Play } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -8,7 +8,9 @@ import { ConsensusView } from './ConsensusView';
 import { TripSummary } from './TripSummary';
 import { VotingCountdown } from './VotingCountdown';
 import { EliminationScreen } from './EliminationScreen';
+import { VotingBoard } from './VotingBoard';
 import { supabase } from '../../services/supabase';
+import { ProposalModal } from './OraculoModal';
 
 // DND-KIT IMPORTS
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, TouchSensor } from '@dnd-kit/core';
@@ -44,12 +46,6 @@ function MapUpdater({ center }: { center: [number, number] }) {
     const map = useMap();
     useEffect(() => { if (center) map.flyTo(center, 13); }, [center, map]);
     return null;
-}
-
-function SortableItem({ id, children }: any) {
-    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
-    const style = { transform: CSS.Transform.toString(transform), transition, zIndex: isDragging ? 9999 : 'auto', position: 'relative' as 'relative', opacity: isDragging ? 0.8 : 1, scale: isDragging ? 1.05 : 1 };
-    return (<div ref={setNodeRef} style={style} className="touch-none relative"> {children(attributes, listeners)} </div>);
 }
 
 const Modal = ({ isOpen, title, onClose, children }: any) => {
@@ -95,6 +91,8 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     // Sistema
     const [alertConfig, setAlertConfig] = useState<any>(null);
     const [isLoadingMap, setIsLoadingMap] = useState(false);
+    // ESTADO DEL RELOJ INTERNO (Heartbeat)
+    const [now, setNow] = useState(new Date());
 
     // Votación
     const [candidaturas, setCandidaturas] = useState<any[]>([]);
@@ -104,22 +102,13 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const [winnerData, setWinnerData] = useState<any>(null);
 
     // Olympic System / Porcos Bravos
-    const [tripPhase, setTripPhase] = useState<'PLANNING' | 'VOTING' | 'FINISHED'>('PLANNING');
     const [votingStartDate, setVotingStartDate] = useState<string | null>(null);
+    const [isVotingOpen, setIsVotingOpen] = useState(false);
     const [showDatePicker, setShowDatePicker] = useState(false);
-    const [selectedDate, setSelectedDate] = useState('');
 
     // Roles
     const [showRolesModal, setShowRolesModal] = useState(false);
     const [usersList, setUsersList] = useState<any[]>([]);
-
-    // Dossier
-    const [selectedCandidate, setSelectedCandidate] = useState<any>(null);
-    const [dossierTab, setDossierTab] = useState<'general' | 'logistica' | 'alojamiento' | 'costes'>('general');
-
-    // Drag & Drop
-    const dragItem = useRef<number | null>(null);
-    const dragOverItem = useRef<number | null>(null);
 
     // Seasonality Dashboard
     const [selectedMonths, setSelectedMonths] = useState<number[]>([]);
@@ -139,9 +128,6 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const [rangeStart, setRangeStart] = useState<string | null>(null);
     const [rangeEnd, setRangeEnd] = useState<string | null>(null);
     const [suggestedInterval, setSuggestedInterval] = useState<{ inicio: string, fin: string } | null>(null);
-
-    // --- NOTA: isPaused eliminado de la lógica para evitar bloqueos ---
-    const isPaused = useRef(false);
 
     // Dashboard & Wallet
     const [searchQuery, setSearchQuery] = useState("Tapas");
@@ -183,14 +169,30 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         // Al cambiar de viaje, pantalla en blanco INMEDIATAMENTE
         setCandidaturas([]);
         setMyRanking([]);
+        setVotingStartDate(null);
+        setIsVotingOpen(false);
+        setHasVoted(false);
     }, [user?.viajeId]);
 
-    // --- POLLING DESBLOQUEADO (Sin isPaused) ---
+    // --- EL LATIDO DEL SISTEMA (HEARTBEAT) ---
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setNow(new Date());
+        }, 1000);
+        return () => clearInterval(timer);
+    }, []);
+
+    // --- POLLING ESTRATÉGICO: Se detiene si trabajas ---
     useEffect(() => {
         if (!user) return;
+
+        // SI HAY UN MODAL, PARAMOS TODO.
+        // Esto evita el choque de trenes.
+        if (modalAction) return;
+
         let isMounted = true;
         const intervalId = setInterval(async () => {
-            if (!isMounted) return; // SIN BLOQUEOS
+            if (!isMounted) return;
             try {
                 await refreshCandidates();
                 await refreshCalendar();
@@ -200,11 +202,12 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                 console.error("Polling error", error);
             }
         }, 3000);
+
         return () => {
             isMounted = false;
             clearInterval(intervalId);
         };
-    }, [user, view]);
+    }, [user, view, modalAction]);
 
     // --- FUNCIONES AUXILIARES ---
     const showAlert = (message: string) => setAlertConfig({ type: 'alert', message, onConfirm: () => setAlertConfig(null) });
@@ -257,105 +260,106 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const refreshCandidates = async () => {
         if (!user) return;
 
-        // CONSULTAR ESTADO DEL VIAJE PARA DETECTAR GANADOR
         try {
+            // 1. OBTENER ESTADO DEL VIAJE (FECHAS Y FASE)
             const viajeRes = await fetch(`http://localhost:3005/api/viaje/estado?viajeId=${user.viajeId}`);
             const viajeData = await viajeRes.json();
 
-            // Si el destino cambió en el servidor, actualizar usuario local
+            if (viajeData.voting_start_date) {
+                setVotingStartDate(viajeData.voting_start_date);
+            }
+
+            if (viajeData.is_voting_open) {
+                setIsVotingOpen(true);
+            } else {
+                setIsVotingOpen(false);
+            }
+
             if (viajeData.destino && viajeData.destino !== user.destino) {
                 const updatedUser = { ...user, destino: viajeData.destino };
                 setUser(updatedUser);
                 localStorage.setItem('travelSphereUser', JSON.stringify(updatedUser));
 
-                // Si ya no es PENDIENTE, mostrar ganador
                 if (!viajeData.destino.startsWith("PENDIENTE")) {
                     setWinnerData(viajeData.destino);
                     fetchCityCoords(viajeData.destino);
                 }
             }
 
-            // Sincronizar fase olímpica con el servidor
-            if (viajeData.fase && viajeData.fase !== tripPhase) {
-                setTripPhase(viajeData.fase);
-            }
-            if (viajeData.voting_start_date) {
-                setVotingStartDate(viajeData.voting_start_date);
-            }
         } catch (e) {
             console.error("Error checking trip status:", e);
         }
 
+        // 2. OBTENER CANDIDATURAS
         const res = await fetch(`http://localhost:3005/api/voting/candidaturas?viajeId=${user.viajeId}&usuarioId=${user.id}`);
         const data = await res.json();
 
         const serverCands = data.candidaturas || [];
-
-        // 1. Actualizamos la lista maestra
         if (JSON.stringify(serverCands) !== JSON.stringify(candidaturas)) {
             setCandidaturas(serverCands);
         }
-        setHasVoted(data.yaVoto);
 
-        // 2. AQUÍ ESTABA EL FALLO: Sincronización del Ranking Visual
+        // Solo actualizamos si no estamos en medio de una votación para evitar saltos
+        if (hasVoted !== data.yaVoto) {
+            setHasVoted(data.yaVoto);
+        }
+
         if (!data.yaVoto) {
             setMyRanking(current => {
-                // Si mi lista local está vacía, cópialo todo tal cual viene del servidor
                 if (current.length === 0) return serverCands;
-
-                // A. MANTENER ORDEN: Nos quedamos con los que ya teníamos (si siguen existiendo en el servidor)
                 const serverIds = new Set(serverCands.map((c: any) => c.id));
                 const existingOrdered = current.filter(c => serverIds.has(c.id));
-
-                // B. DETECTAR NUEVOS: Buscamos qué ciudades trae el servidor que NO tenemos en local
                 const currentIds = new Set(current.map(c => c.id));
                 const newItems = serverCands.filter((c: any) => !currentIds.has(c.id));
-
-                // Si no hay nada que borrar ni nada que añadir, no tocamos nada (para no parpadear)
-                if (existingOrdered.length === current.length && newItems.length === 0) {
-                    return current;
-                }
-
-                // C. FUSIÓN: Tu orden actual + Los nuevos al final
                 return [...existingOrdered, ...newItems];
             });
         }
     };
 
-    // --- FUNCIÓN PROPONER (Sincronía Pura) ---
-    const handlePropose = async () => {
-        if (!newProposal.trim()) return;
+    const forceStartVoting = async () => {
+        if (!user?.esAdmin) return;
+        try {
+            await fetch('http://localhost:3005/api/viaje/cambiar-fase', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ viajeId: user.viajeId, phase: 'voting', votingDate: new Date().toISOString() })
+            });
+            setIsVotingOpen(true);
+            showAlert("¡Votación iniciada manualmente!");
+            await refreshCandidates();
+        } catch (error) {
+            console.error("Error forcing voting start:", error);
+            showAlert("Error al iniciar votación.");
+        }
+    };
+
+    // --- GUARDADO LIMPIO: Solo envía datos, no toca la pantalla ---
+    const handlePropose = async (cityOverride?: string) => {
+        const cityToSend = cityOverride || newProposal;
+        if (!cityToSend?.trim()) return;
 
         try {
-            // 1. Guardar en servidor
             const res = await fetch('http://localhost:3005/api/voting/proponer', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, ciudad: newProposal })
+                body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, ciudad: cityToSend })
             });
-
             const data = await res.json();
 
             if (data.success) {
-                // 2. Limpiar el input
-                setNewProposal('');
-                setModalAction(null); // Cierra el modal si estaba abierto
-
-                // 3. ¡AQUÍ ESTÁ LA CLAVE! Forzamos la recarga de datos
-                // Esperamos un poquito (100ms) para asegurar que la base de datos ya tiene el dato nuevo
-                setTimeout(async () => {
-                    await refreshCandidates();
-                }, 100);
+                // Devolvemos el control. El Modal hará la magia visual.
+                return true;
             } else {
                 alert("Error al añadir: " + JSON.stringify(data));
+                throw new Error("Error backend");
             }
         } catch (e) {
             console.error(e);
             alert("Error de conexión (3005).");
+            throw e;
         }
     };
 
-    // --- FUNCIÓN BORRAR (Sincronía Pura) ---
     const handleDelete = async (id: any) => {
         showConfirm("¿Seguro que quieres borrar esta ciudad? Esta acción no se puede deshacer.", async () => {
             try {
@@ -364,72 +368,18 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ id: id })
                 });
-
                 const data = await res.json();
-
                 if (data.success) {
-                    setAlertConfig(null); // Cerrar el modal de confirmación
-                    await refreshCandidates(); // Refresco forzado
+                    setAlertConfig(null);
+                    await refreshCandidates();
                     showAlert("Ciudad eliminada correctamente.");
                 } else {
                     setAlertConfig(null);
                     showAlert("No se pudo borrar: " + JSON.stringify(data));
                 }
             } catch (e) {
-                console.error(e);
                 setAlertConfig(null);
                 showAlert("Error de conexión al borrar.");
-            }
-        });
-    };
-
-    const handleDragEnd = (event: any) => {
-        const { active, over } = event;
-        if (active.id !== over.id) {
-            setMyRanking((items) => {
-                const oldIndex = items.findIndex(item => item.id === active.id);
-                const newIndex = items.findIndex(item => item.id === over.id);
-                return arrayMove(items, oldIndex, newIndex);
-            });
-        }
-    };
-
-    const submitRanking = async () => {
-        const rankingIds = myRanking.map(c => c.id);
-        const res = await fetch('http://localhost:3005/api/voting/enviar-ranking', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id, rankingIds }) });
-        if (res.ok) { refreshCandidates(); showAlert("¡Voto registrado! Esperando resultados..."); }
-    };
-
-    const handleCloseVoting = async () => {
-        if (candidaturas.length === 0) return showAlert("¡No hay candidaturas!");
-
-        showConfirm("Esta acción cerrará la votación para siempre. ¿Proceder?", async () => {
-            setAlertConfig(null);
-
-            // Mostrar feedback inmediato
-            showAlert("Cerrando votación...");
-
-            try {
-                const res = await fetch('http://localhost:3005/api/voting/cerrar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viajeId: user.viajeId }) });
-                const data = await res.json();
-
-                if (data.success) {
-                    // Esperar 1 segundo antes de mostrar ganador
-                    setTimeout(() => {
-                        setAlertConfig(null);
-                        setWinnerData(data.nuevoDestino);
-                        const newUser = { ...user, destino: data.nuevoDestino };
-                        setUser(newUser);
-                        localStorage.setItem('travelSphereUser', JSON.stringify(newUser));
-                        fetchCityCoords(data.nuevoDestino);
-                    }, 1000);
-                } else {
-                    setAlertConfig(null);
-                    showAlert("Error: " + data.error);
-                }
-            } catch (e) {
-                setAlertConfig(null);
-                showAlert("Error de conexión.");
             }
         });
     };
@@ -445,7 +395,6 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const toggleRole = async (targetUserId: number, role: 'es_admin' | 'es_tesorero', currentValue: boolean) => {
         setUsersList(usersList.map(u => u.id === targetUserId ? { ...u, [role === 'es_admin' ? 'es_admin' : 'es_tesorero']: !currentValue ? 1 : 0 } : u));
         await fetch('http://localhost:3005/api/roles/actualizar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usuarioId: targetUserId, rol: role, valor: !currentValue }) });
-
         if (targetUserId === user.id) {
             const updatedUser = { ...user, [role === 'es_admin' ? 'esAdmin' : 'esTesorero']: !currentValue ? 1 : 0 };
             setUser(updatedUser);
@@ -536,7 +485,6 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     useEffect(() => { if ((view === 'dashboard' || view === 'calendar_room') && isWalletOpen) refreshWallet(); }, [isWalletOpen, view]);
 
-    // Auto-load months when entering seasonality_dashboard
     useEffect(() => {
         if (view === 'seasonality_dashboard' && user) {
             const loadMonths = async () => {
@@ -544,11 +492,8 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                 try {
                     const res = await fetch(`http://localhost:3005/api/months/get?viajeId=${user.viajeId}`);
                     const data = await res.json();
-
                     if (data.selectedMonths && data.selectedMonths.length > 0) {
                         setSelectedMonths(data.selectedMonths);
-
-                        // Si NO es admin, redirigir automáticamente a group_availability
                         if (!user.esAdmin) {
                             setTimeout(() => setView('group_availability'), 800);
                         }
@@ -563,14 +508,12 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         }
     }, [view, user]);
 
-    // Load final dates when entering trip_summary
     useEffect(() => {
         if (view === 'trip_summary' && user) {
             const loadFinalDates = async () => {
                 try {
                     const res = await fetch(`http://localhost:3005/api/viaje/estado?viajeId=${user.viajeId}`);
                     const data = await res.json();
-
                     if (data.fechaFinal) {
                         setFinalStartDate(data.fechaFinal.inicio);
                         setFinalEndDate(data.fechaFinal.fin);
@@ -613,30 +556,58 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         return (<div className="fixed inset-0 z-[5000] bg-[#F8F5F2] flex items-center justify-center p-6"><div className="w-full max-w-md bg-white p-12 rounded-[2rem] shadow-xl animate-enter relative overflow-hidden border border-[#E7E5E4]"><div className="absolute top-0 left-0 w-full h-2 bg-[#1B4332]"></div><div className="flex justify-center mb-6"><div className="bg-[#E8F5E9] p-4 rounded-full"><Compass size={40} className="text-[#1B4332]" strokeWidth={1.5} /></div></div><h1 className="text-3xl serif-font text-center text-[#1B4332] mb-2">{lobbyMode === 'start' ? 'TravelSphere' : lobbyMode === 'create_choice' ? 'Diseña tu Viaje' : lobbyMode === 'create_voting' ? 'Misión Democrática' : 'Comenzar Aventura'}</h1><p className="text-center text-[#78716C] mb-8 text-sm tracking-wide">{lobbyMode === 'start' ? 'El arte de viajar en compañía.' : lobbyMode === 'create_choice' ? '¿Tenéis claro el rumbo?' : lobbyMode === 'create_voting' ? 'El grupo decidirá el destino.' : 'Configura los detalles finales.'}</p>{lobbyMode === 'start' && (<div className="space-y-4"><button onClick={() => setLobbyMode('create_choice')} className="w-full py-5 btn-primary text-lg flex items-center justify-center gap-3 shadow-lg shadow-[#1B4332]/10"><Plus size={20} /> Crear Experiencia</button><button onClick={() => setLobbyMode('join')} className="w-full py-5 btn-secondary text-lg font-medium flex items-center justify-center gap-3"><LogIn size={20} /> Unirse al Grupo</button></div>)}{lobbyMode === 'create_choice' && (<div className="space-y-4 animate-enter"><button onClick={() => setLobbyMode('create_fixed')} className="w-full p-6 bg-[#F8F5F2] border border-[#E7E5E4] rounded-2xl hover:border-[#1B4332] hover:bg-[#E8F5E9] transition-all group text-left flex items-center gap-4"><div className="bg-white p-3 rounded-full text-[#1B4332] group-hover:scale-110 transition-transform"><MapPin size={24} /></div><div><h3 className="font-bold text-[#1B4332] text-lg">Destino Definido</h3><p className="text-xs text-[#78716C]">Ya sabemos a dónde vamos.</p></div></button><button onClick={() => setLobbyMode('create_voting')} className="w-full p-6 bg-[#F8F5F2] border border-[#E7E5E4] rounded-2xl hover:border-[#1B4332] hover:bg-[#E8F5E9] transition-all group text-left flex items-center gap-4"><div className="bg-white p-3 rounded-full text-[#1B4332] group-hover:scale-110 transition-transform"><Vote size={24} /></div><div><h3 className="font-bold text-[#1B4332] text-lg">Someter a Votación</h3><p className="text-xs text-[#78716C]">Decidiremos el destino juntos.</p></div></button><button onClick={() => setLobbyMode('start')} className="w-full py-3 text-sm text-[#78716C] hover:text-[#1B4332] flex items-center justify-center gap-2 mt-4"><ArrowRight className="rotate-180" size={16} /> Volver</button></div>)}{(lobbyMode === 'create_fixed' || lobbyMode === 'create_voting' || lobbyMode === 'join') && (<div className="space-y-6 animate-enter"><div><label className="text-[10px] font-bold text-[#78716C] uppercase ml-1 tracking-widest">{lobbyMode === 'create_fixed' ? 'Destino' : lobbyMode === 'join' ? 'Código de Acceso' : 'Nombre del Grupo'}</label><input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332] transition-all placeholder:text-[#D6D3D1]" placeholder={lobbyMode === 'create_fixed' ? "Ej: París" : lobbyMode === 'join' ? "ABCD" : "Ej: Verano 2026"} maxLength={lobbyMode === 'join' ? 4 : 50} value={lobbyMode === 'join' ? lobbyForm.codigo : lobbyForm.destino} onChange={e => lobbyMode === 'join' ? setLobbyForm({ ...lobbyForm, codigo: e.target.value.toUpperCase() }) : setLobbyForm({ ...lobbyForm, destino: e.target.value })} /></div><div><label className="text-[10px] font-bold text-[#78716C] uppercase ml-1 tracking-widest">Tu Nombre</label><input type="text" className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332] transition-all placeholder:text-[#D6D3D1]" placeholder="Ej: Ana" value={lobbyForm.nombre} onChange={e => setLobbyForm({ ...lobbyForm, nombre: e.target.value })} /></div>{lobbyError && <p className="text-[#9B2226] text-xs font-medium text-center bg-[#FEF2F2] py-2 rounded-lg">{lobbyError}</p>}<div className="flex gap-4 pt-4"><button onClick={() => { setLobbyMode('start'); setLobbyError('') }} className="p-4 rounded-full bg-[#F8F5F2] text-[#78716C] hover:bg-gray-200 transition-colors"><ArrowRight size={24} className="rotate-180" /></button><button onClick={() => lobbyMode === 'join' ? handleJoinTrip() : handleCreateTrip(lobbyMode === 'create_voting')} className="flex-1 py-4 btn-primary text-lg shadow-xl shadow-[#1B4332]/20">{lobbyMode === 'create_voting' ? 'Abrir Votación' : lobbyMode === 'create_fixed' ? 'Comenzar' : 'Entrar'}</button></div></div>)}</div></div>);
     }
 
-    // 2. VOTING ROOM (VERSIÓN PROFESIONAL: CONECTADA A LA TABLA 'TRIPS')
+    // 2. VOTING ROOM (CONECTADO Y ROBUSTO)
     if (view === 'voting_room') {
-        // Obtenemos el código real del viaje (Asumimos que está en el título o en la sesión)
-        // Nota: En tu app actual, el código "OZHD" se muestra en pantalla. Usaremos ese.
-        const tripCode = "OZHD"; // En el futuro, esto vendrá de una variable dinámica user.viajeCodigo
-
+        const tripCode = user.viajeCodigo || "OZHD";
         const hasDate = !!votingStartDate;
-        const isVotingActive = hasDate && new Date() >= new Date(votingStartDate);
+        const isTimeUp = hasDate && now >= new Date(votingStartDate);
+        const shouldShowVoting = isTimeUp || isVotingOpen;
 
-        // A) FASE DE ELIMINACIÓN
-        if (isVotingActive) {
+        if (shouldShowVoting) {
+            // FASE DE RESULTADOS (Si ya votó)
+            if (hasVoted) {
+                return (
+                    <div className="fixed inset-0 z-[200] bg-[#F8F5F2] flex flex-col">
+                        <div className="flex-1 overflow-y-auto p-6 pb-32">
+                            {/* SOLUCIÓN AL FLASH: Pasamos "phase='voting'" para que no falle si lo pide */}
+                            <EliminationScreen
+                                candidaturas={candidaturas}
+                                onVote={refreshCandidates}
+                                phase="purga" // Valor por defecto seguro
+                            />
+                        </div>
+                    </div>
+                );
+            }
+
+            // FASE DE VOTACIÓN (Tablero)
             return (
                 <div className="fixed inset-0 z-[200] bg-[#F8F5F2] flex flex-col">
-                    <div className="flex-1 overflow-y-auto p-6 pb-32">
-                        <EliminationScreen candidaturas={candidaturas} user={user} onVote={refreshCandidates} />
+                    <div className="pt-6 px-6 pb-2 shrink-0 flex justify-between items-center">
+                        <button onClick={() => setView('dashboard')} className="flex items-center gap-2 text-[#78716C] font-bold text-xs uppercase tracking-widest hover:text-[#1B4332]">
+                            <ArrowRight className="rotate-180" size={14} /> Volver
+                        </button>
+                        <span className="text-[10px] font-bold text-[#1B4332] uppercase tracking-widest bg-[#E8F5E9] px-3 py-1 rounded-full">
+                            Fase de Votación
+                        </span>
+                    </div>
+                    <div className="flex-1 overflow-y-auto">
+                        <VotingBoard
+                            candidaturas={candidaturas}
+                            user={user}
+                            onVoteSaved={async () => {
+                                await refreshCandidates();
+                                setHasVoted(true);
+                            }}
+                        />
                     </div>
                 </div>
             );
         }
 
-        // B) FASE DE PREPARACIÓN
+        // FASE DE ESPERA / CUENTA ATRÁS
         return (
             <div className="fixed inset-0 z-[200] bg-[#F8F5F2] flex flex-col">
-                {/* Cabecera */}
                 <div className="pt-6 px-6 pb-4 shrink-0 bg-[#F8F5F2] flex items-center justify-between">
                     <button onClick={() => setView('dashboard')} className="flex items-center gap-2 text-[#78716C] font-bold text-xs uppercase tracking-widest hover:text-[#1B4332]">
                         <ArrowRight className="rotate-180" size={14} /> Volver al Mapa
@@ -646,73 +617,54 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                     </span>
                 </div>
 
-                {/* Contenido Principal */}
                 <div className="flex-1 overflow-y-auto px-6 pb-24">
-
                     {!hasDate ? (
                         <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-6 animate-in fade-in">
                             <div className="w-20 h-20 bg-[#F2EFE9] rounded-full flex items-center justify-center text-[#1B4332] mb-2 shadow-inner">
                                 <Calendar size={40} strokeWidth={1.5} />
                             </div>
-
                             <div>
                                 <h2 className="text-2xl serif-font text-[#1B4332] mb-2">Viaje sin Fecha</h2>
                                 <p className="text-[#78716C] text-sm max-w-[250px] mx-auto leading-relaxed">
                                     {!!user?.esAdmin
-                                        ? "Como administrador, debes fijar la fecha límite en la configuración general del viaje."
+                                        ? "Como administrador, debes fijar la fecha límite para empezar a votar."
                                         : "Esperando a que el administrador fije la fecha..."}
                                 </p>
                             </div>
-
-                            {/* BOTÓN ADMIN */}
                             {!!user?.esAdmin && (
                                 <button onClick={() => setShowDatePicker(true)} className="bg-[#1B4332] text-white px-8 py-4 rounded-full font-bold shadow-xl hover:bg-[#2D6A4F] flex items-center gap-3 uppercase tracking-wider text-xs transition-transform hover:scale-105">
                                     <Calendar size={18} /> Fijar Fecha Límite
                                 </button>
                             )}
-
-                            {/* BOTÓN INVITADO (Lee de la tabla TRIPS) */}
-                            {!user?.esAdmin && (
-                                <button
-                                    onClick={async () => {
-                                        // Consulta profesional a la tabla TRIPS
-                                        const { data, error } = await supabase
-                                            .from('trips')
-                                            .select('voting_start_date')
-                                            .eq('code', tripCode) // Busca por el código del viaje
-                                            .single();
-
-                                        if (data && data.voting_start_date) {
-                                            setVotingStartDate(data.voting_start_date);
-                                        } else {
-                                            alert("El Admin aún no ha guardado la fecha en el nuevo sistema.");
-                                        }
-                                    }}
-                                    className="text-[#1B4332] border border-[#1B4332]/20 px-6 py-3 rounded-full text-xs font-bold uppercase tracking-widest hover:bg-[#1B4332] hover:text-white transition-colors flex items-center gap-2"
-                                >
-                                    <ArrowRight size={14} className="rotate-0" /> Comprobar Fecha
-                                </button>
-                            )}
                         </div>
                     ) : (
-                        // VISTA CUANDO YA HAY FECHA
                         <div className="animate-in slide-in-from-bottom-4">
                             <div className="mb-8">
                                 <VotingCountdown
                                     votingDate={votingStartDate}
                                     isAdmin={false}
                                     candidatesCount={candidaturas.length}
-                                    onStartVoting={() => { }}
+                                    onStartVoting={() => {
+                                        forceStartVoting();
+                                        refreshCandidates();
+                                    }}
                                     onDateUpdate={() => { }}
                                 />
                                 {!!user?.esAdmin && (
-                                    <button onClick={() => setShowDatePicker(true)} className="w-full text-center text-[10px] text-[#A8A29E] underline mt-3 hover:text-[#1B4332]">
-                                        Modificar fecha límite
-                                    </button>
+                                    <>
+                                        <button onClick={() => setShowDatePicker(true)} className="w-full text-center text-[10px] text-[#A8A29E] underline mt-3 hover:text-[#1B4332]">
+                                            Modificar fecha límite
+                                        </button>
+                                        <div className="mt-8 pt-8 border-t border-[#E7E5E4] text-center">
+                                            <p className="text-[10px] font-bold text-[#A8A29E] uppercase mb-2">¿Problemas con el contador?</p>
+                                            <button onClick={forceStartVoting} className="w-full bg-[#E7E5E4] text-[#78716C] py-3 rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-red-100 hover:text-red-600 transition-colors flex items-center justify-center gap-2">
+                                                <Play size={14} fill="currentColor" /> Forzar Inicio de Votación
+                                            </button>
+                                        </div>
+                                    </>
                                 )}
                             </div>
 
-                            {/* ... (Resto de la lista de propuestas igual que antes) ... */}
                             <div className="flex items-center justify-between mb-4 px-1">
                                 <h2 className="text-xl serif-font text-[#1B4332]">Propuestas</h2>
                                 <span className="bg-[#1B4332]/10 text-[#1B4332] text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-widest">
@@ -723,8 +675,8 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                             <div className="space-y-3">
                                 {candidaturas.length > 0 ? (
                                     candidaturas.map((c: any, index: number) => (
-                                        <div key={c.id} onClick={() => setSelectedCandidate(c)} className="bg-white p-4 rounded-xl shadow-sm border border-[#E7E5E4] flex items-center gap-4 cursor-pointer hover:border-[#1B4332] transition-all relative group">
-                                            <div className="bg-[#F2EFE9] text-[#1B4332] w-9 h-9 rounded-full flex items-center justify-center font-bold serif-font text-sm shrink-0 group-hover:bg-[#1B4332] group-hover:text-white transition-colors">
+                                        <div key={c.id} className="bg-white p-4 rounded-xl shadow-sm border border-[#E7E5E4] flex items-center gap-4 relative group">
+                                            <div className="bg-[#F2EFE9] text-[#1B4332] w-9 h-9 rounded-full flex items-center justify-center font-bold serif-font text-sm shrink-0">
                                                 {index + 1}
                                             </div>
                                             <div className="flex-1 min-w-0">
@@ -733,7 +685,6 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                                                     Propuesto por: {c.propuesto_por}
                                                 </p>
                                             </div>
-                                            <div className="text-[#D6D3D1]"><Info size={20} /></div>
                                             {!!user?.esAdmin && (
                                                 <button onClick={(e) => { e.stopPropagation(); handleDelete(c.id); }} className="p-2 text-red-300 hover:text-red-600 transition-colors shrink-0">
                                                     <Trash2 size={18} />
@@ -743,11 +694,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                                     ))
                                 ) : (
                                     <div className="text-center py-12 border-2 border-dashed border-[#E7E5E4] rounded-3xl bg-white/50">
-                                        <div className="inline-block p-3 bg-[#F2EFE9] rounded-full mb-3 text-[#1B4332]">
-                                            <Plus size={24} />
-                                        </div>
-                                        <p className="text-[#1B4332] font-bold serif-font mb-1">¡Sé el primero!</p>
-                                        <p className="text-[#A8A29E] text-xs">Añade la primera propuesta.</p>
+                                        <p className="text-[#1B4332] font-bold serif-font mb-1">Esperando propuestas</p>
                                     </div>
                                 )}
                             </div>
@@ -755,8 +702,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                     )}
                 </div>
 
-                {/* Botón flotante y Modales... (Igual que antes) */}
-                {hasDate && (
+                {hasDate && !shouldShowVoting && (
                     <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[210]">
                         <button onClick={() => setModalAction({ type: 'proponer' })} className="bg-[#1B4332] text-white w-16 h-16 rounded-full shadow-2xl flex items-center justify-center hover:scale-105 transition-transform border-4 border-[#F8F5F2] active:scale-95">
                             <Plus size={32} strokeWidth={2} />
@@ -764,18 +710,8 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                     </div>
                 )}
 
-                {/* Modal Proponer (Igual) */}
-                <Modal isOpen={modalAction?.type === 'proponer'} title="Nueva Propuesta" onClose={() => setModalAction(null)}>
-                    <div className="space-y-4">
-                        <div>
-                            <label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Nombre del Destino</label>
-                            <input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Roma" value={newProposal} onChange={e => setNewProposal(e.target.value)} onKeyDown={e => e.key === 'Enter' && handlePropose()} />
-                        </div>
-                        <button onClick={handlePropose} className="w-full py-4 btn-primary text-sm uppercase tracking-widest mt-2 flex items-center justify-center gap-2 shadow-lg"><Plus size={18} /> Lanzar Propuesta</button>
-                    </div>
-                </Modal>
 
-                {/* MODAL 2: PROGRAMAR FECHA (INTELIGENCIA REAL) */}
+
                 <Modal isOpen={showDatePicker} title="Programar Votación" onClose={() => setShowDatePicker(false)}>
                     <div className="space-y-6">
                         <div className="text-center">
@@ -784,38 +720,22 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                             </div>
                             <p className="text-sm text-[#78716C]">Selecciona cuándo comenzará la votación.</p>
                         </div>
-
                         <input id="date-picker-input" type="datetime-local" className="w-full bg-[#F8F5F2] p-4 rounded-xl text-lg text-[#1B4332] outline-none border border-transparent focus:border-[#1B4332] accent-[#1B4332]" style={{ colorScheme: 'light' }} defaultValue={votingStartDate ? new Date(votingStartDate).toISOString().slice(0, 16) : ''} />
-
                         <button
                             onClick={async () => {
                                 const input = document.getElementById('date-picker-input') as HTMLInputElement;
                                 if (!input || !input.value) return;
-
                                 const newDate = new Date(input.value).toISOString();
 
-                                // LÓGICA INTELIGENTE: CREAR O ACTUALIZAR
-                                // 1. Buscamos si el viaje existe
-                                const { data: existingTrip } = await supabase
-                                    .from('trips')
-                                    .select('id')
-                                    .eq('code', tripCode)
-                                    .maybeSingle();
-
-                                if (existingTrip) {
-                                    // A) Si existe: ACTUALIZAMOS la fecha
-                                    await supabase.from('trips').update({ voting_start_date: newDate }).eq('code', tripCode);
-                                } else {
-                                    // B) Si NO existe: LO CREAMOS DE CERO (Autogestión)
-                                    await supabase.from('trips').insert([
-                                        {
-                                            code: tripCode,
-                                            name: "Porcos Bravos", // Nombre por defecto, luego editable
-                                            voting_start_date: newDate,
-                                            is_voting_open: true
-                                        }
-                                    ]);
-                                }
+                                // SOLUCIÓN SINCRONIZACIÓN: Usamos el servidor como intermediario seguro
+                                await fetch('http://localhost:3005/api/viaje/fijar-fechas', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        viajeId: user.viajeId,
+                                        votingStartDate: newDate
+                                    })
+                                });
 
                                 setVotingStartDate(newDate);
                                 setShowDatePicker(false);
@@ -824,10 +744,22 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                         >
                             Confirmar Fecha
                         </button>
-
                         <button onClick={() => setShowDatePicker(false)} className="w-full py-2 text-[#A8A29E] hover:text-[#1B4332] text-xs font-bold uppercase tracking-widest">Cancelar</button>
                     </div>
                 </Modal>
+
+                {/* --- MODAL COORDINADO (Paso 3) --- */}
+                <ProposalModal
+                    isOpen={modalAction?.type === 'proponer'}
+                    onClose={async () => {
+                        setModalAction(null);      // 1. Cerramos (El Polling despierta)
+                        setNewProposal('');        // 2. Limpiamos
+                        await refreshCandidates(); // 3. Actualizamos lo nuevo
+                    }}
+                    onSubmit={async (city: string) => {
+                        await handlePropose(city); // Solo guarda
+                    }}
+                />
 
                 <CustomAlert {...alertConfig} />
             </div>
@@ -1037,14 +969,14 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                                         key={index}
                                         onClick={() => toggleMonth(index)}
                                         className={`
-                                        relative p-4 rounded-xl border-2 transition-all
-                                        ${isSelected
+                                            relative p-4 rounded-xl border-2 transition-all
+                                            ${isSelected
                                                 ? 'bg-[#1B4332] border-[#1B4332] text-white shadow-lg scale-105'
                                                 : isRecommended
                                                     ? 'bg-[#E8F5E9] border-[#40916C] text-[#1B4332] hover:bg-[#DCFCE7]'
                                                     : 'bg-white border-[#E7E5E4] text-[#78716C] hover:border-[#1B4332]'
                                             }
-                                    `}
+                                        `}
                                     >
                                         {isRecommended && !isSelected && (
                                             <div className="absolute -top-2 -right-2 w-5 h-5 bg-[#40916C] rounded-full flex items-center justify-center">
@@ -1263,13 +1195,18 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                 </div>
             </Modal>
 
-            <Modal isOpen={modalAction?.type === 'proponer'} title="Nueva Propuesta" onClose={() => setModalAction(null)}>
-                <div className="space-y-4">
-                    <label className="text-[10px] font-bold text-[#78716C] uppercase tracking-widest">Nombre del Destino</label>
-                    <input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332]" placeholder="Ej: Tokio" value={newProposal} onChange={e => setNewProposal(e.target.value)} />
-                    <button onClick={handlePropose} className="w-full py-4 btn-primary text-lg flex items-center justify-center gap-2 mt-4"><Plus size={20} /> Proponer Destino</button>
-                </div>
-            </Modal>
+            {/* --- MODAL COORDINADO (Paso 3) --- */}
+            <ProposalModal
+                isOpen={modalAction?.type === 'proponer'}
+                onClose={async () => {
+                    setModalAction(null);      // 1. Cerramos (El Polling despierta)
+                    setNewProposal('');        // 2. Limpiamos
+                    await refreshCandidates(); // 3. Actualizamos lo nuevo
+                }}
+                onSubmit={async (city: string) => {
+                    await handlePropose(city); // Solo guarda
+                }}
+            />
 
             <CustomAlert {...alertConfig} />
 

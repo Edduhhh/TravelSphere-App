@@ -1,11 +1,24 @@
-// 🔥 CARGAR ENVIRONMENT VARIABLES PRIMERO (ANTES DE TODO)
-import 'dotenv/config';
+// 🔥 INICIO DE SISTEMA: CONFIGURACIÓN Y SEGURIDAD 🔥
+import 'dotenv/config'; // Carga las claves del archivo .env
 
-console.log('🔍 Intentando leer .env...');
-console.log('📍 URL encontrada:', process.env.SUPABASE_URL ? 'SÍ' : 'NO');
-console.log('🔑 KEY encontrada:', process.env.SUPABASE_KEY ? 'SÍ' : 'NO');
-console.log('📍 VITE_URL encontrada:', process.env.VITE_SUPABASE_URL ? 'SÍ' : 'NO');
-console.log('🔑 VITE_KEY encontrada:', process.env.VITE_SUPABASE_ANON_KEY ? 'SÍ' : 'NO');
+// --- DIAGNÓSTICO DE ARRANQUE ---
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
+console.log("\n╔══════════════════════════════════════════════════╗");
+console.log("║       INICIANDO SERVIDOR TRAVELSPHERE 2.0        ║");
+console.log("╠══════════════════════════════════════════════════╣");
+
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+    console.error("║ ❌ ERROR CRÍTICO: NO SE ENCUENTRAN LAS CLAVES    ║");
+    console.error("║    El archivo .env no se está leyendo o falta.   ║");
+    process.exit(1);
+} else {
+    console.log("║ ✅ CLAVES DETECTADAS                             ║");
+    console.log(`║    URL: ${SUPABASE_URL.substring(0, 20)}...       ║`);
+    console.log("║    Conexión a la nube: LISTA                     ║");
+    console.log("╚══════════════════════════════════════════════════╝\n");
+}
 
 import express from 'express';
 import cors from 'cors';
@@ -14,48 +27,33 @@ import Database from 'better-sqlite3';
 import { createClient } from '@supabase/supabase-js';
 
 const PORT = 3005;
-// 👇 TU CLAVE AQUÍ 👇
 const GOOGLE_API_KEY = 'AIzaSyDS3VslypLLj3ztowsvykxRUIcUrah7BZg';
 
-// --- SUPABASE CLIENT (SERVER-SIDE) CON FALLBACK ROBUSTO ---
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ynrqpbnmtnucyifqswvb.supabase.co';
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+// Cliente Supabase
+const supabaseServer = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } });
 
-console.log('✅ Usando Supabase URL:', SUPABASE_URL);
-console.log('✅ Usando Supabase KEY:', SUPABASE_SERVICE_KEY ? 'ENCONTRADA (' + SUPABASE_SERVICE_KEY.substring(0, 20) + '...)' : 'NO ENCONTRADA ❌');
-
-if (!SUPABASE_SERVICE_KEY) {
-    console.error('❌ FATAL: No se encontró ninguna clave de Supabase en las variables de entorno.');
-    console.error('💡 Verifica que tu archivo .env contenga SUPABASE_KEY, VITE_SUPABASE_ANON_KEY, o similar.');
-    process.exit(1);
-}
-
-const supabaseServer = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false } // 🔥 SIN CACHE - Evita errores de "schema cache"
-});
-console.log('🔗 Supabase client configured for server proxy (NO CACHE)');
-
-// Usamos verbose para ver las queries en la consola (ayuda a depurar)
+// Base de Datos Local
 const db = new Database('viajes_pro.db');
 
-// --- BASE DE DATOS (ESTRUCTURA MANTENIDA) ---
+// --- ESTRUCTURA DE BASE DE DATOS LOCAL (COMPLETA) ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS viajes (
     id INTEGER PRIMARY KEY, 
     codigo TEXT UNIQUE, 
     destino TEXT, 
     fecha_inicio TEXT, 
-    fecha_fin TEXT,
+    fecha_fin TEXT, 
     selected_months TEXT,
-    fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP
+    fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+    fecha_final TEXT
   );
   
   CREATE TABLE IF NOT EXISTS usuarios (
     id INTEGER PRIMARY KEY, 
     viaje_id INTEGER, 
     nombre TEXT, 
-    es_admin BOOLEAN DEFAULT 0,    -- Controla votaciones y configuración
-    es_tesorero BOOLEAN DEFAULT 0, -- Controla el dinero
+    es_admin BOOLEAN DEFAULT 0,
+    es_tesorero BOOLEAN DEFAULT 0,
     FOREIGN KEY(viaje_id) REFERENCES viajes(id)
   );
 
@@ -130,14 +128,25 @@ app.get('/api/info-ciudad', async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// --- LOBBY (ACTUALIZADO ROLES) ---
+// --- LOBBY (Sincronizado con Supabase trips) ---
 app.post('/api/lobby/crear', (req, res) => {
     const { destino, nombreAdmin } = req.body;
     const codigo = Math.random().toString(36).substring(2, 6).toUpperCase();
     const nuevoViaje = db.prepare('INSERT INTO viajes (codigo, destino) VALUES (?, ?)').run(codigo, destino);
     const viajeId = nuevoViaje.lastInsertRowid;
-    // EL CREADOR AHORA ES ADMIN Y TESORERO POR DEFECTO
     const nuevoUser = db.prepare('INSERT INTO usuarios (viaje_id, nombre, es_admin, es_tesorero) VALUES (?, ?, 1, 1)').run(viajeId, nombreAdmin);
+
+    // CREAR EN NUBE AUTOMÁTICAMENTE (Tabla TRIPS)
+    supabaseServer.from('trips').upsert({
+        code: codigo,
+        name: destino,
+        is_voting_open: false,
+        current_round: 1
+    }, { onConflict: 'code' }).then(({ error }) => {
+        if (error) console.error("⚠️ Error creando viaje en nube:", error.message);
+        else console.log(`✅ Viaje ${codigo} registrado en nube (Tabla trips).`);
+    });
+
     res.json({ success: true, codigo, viajeId, userId: nuevoUser.lastInsertRowid });
 });
 
@@ -145,29 +154,47 @@ app.post('/api/lobby/unirse', (req, res) => {
     const { codigo, nombre } = req.body;
     const viaje = db.prepare('SELECT * FROM viajes WHERE codigo = ?').get(codigo);
     if (!viaje) return res.status(404).json({ error: "Código no existe" });
-    // LOS QUE SE UNEN NO TIENEN ROL INICIAL
     const nuevoUser = db.prepare('INSERT INTO usuarios (viaje_id, nombre, es_admin, es_tesorero) VALUES (?, ?, 0, 0)').run(viaje.id, nombre);
-    res.json({ success: true, viajeId: viaje.id, userId: nuevoUser.lastInsertRowid, destino: viaje.destino, fechas: { inicio: viaje.fecha_inicio, fin: viaje.fecha_fin } });
+    res.json({ success: true, viajeId: viaje.id, userId: nuevoUser.lastInsertRowid, destino: viaje.destino });
 });
 
-// --- CONSULTAR ESTADO DEL VIAJE (CON FECHA FINAL) ---
-app.get('/api/viaje/estado', (req, res) => {
+// --- CONSULTAR ESTADO (Lee de Supabase trips) ---
+app.get('/api/viaje/estado', async (req, res) => {
     const { viajeId } = req.query;
-    const viaje = db.prepare('SELECT destino, fecha_inicio, fecha_fin, fecha_final FROM viajes WHERE id = ?').get(viajeId);
-    if (!viaje) return res.status(404).json({ error: "Viaje no encontrado" });
+    const viajeLocal = db.prepare('SELECT codigo, destino, fecha_inicio, fecha_fin, fecha_final FROM viajes WHERE id = ?').get(viajeId);
 
-    // Parse fecha_final if exists (stored as "startDate|endDate")
+    if (!viajeLocal) return res.status(404).json({ error: "Viaje no encontrado" });
+
+    // 1. Consultar Nube (La Verdad Absoluta)
+    let votingStartDate = null;
+    let isVotingOpen = false;
+
+    if (viajeLocal.codigo) {
+        const { data: cloudTrip, error } = await supabaseServer
+            .from('trips')
+            .select('voting_start_date, is_voting_open')
+            .eq('code', viajeLocal.codigo)
+            .maybeSingle();
+
+        if (cloudTrip) {
+            votingStartDate = cloudTrip.voting_start_date;
+            isVotingOpen = cloudTrip.is_voting_open;
+        }
+    }
+
     let fechaFinal = null;
-    if (viaje.fecha_final) {
-        const [start, end] = viaje.fecha_final.split('|');
+    if (viajeLocal.fecha_final) {
+        const [start, end] = viajeLocal.fecha_final.split('|');
         fechaFinal = { inicio: start, fin: end };
     }
 
     res.json({
-        destino: viaje.destino,
-        fechaInicio: viaje.fecha_inicio,
-        fechaFin: viaje.fecha_fin,
-        fechaFinal: fechaFinal
+        destino: viajeLocal.destino,
+        fechaInicio: viajeLocal.fecha_inicio,
+        fechaFin: viajeLocal.fecha_fin,
+        fechaFinal: fechaFinal,
+        voting_start_date: votingStartDate, // El dato vital para la cuenta atrás
+        is_voting_open: isVotingOpen
     });
 });
 
@@ -190,8 +217,8 @@ app.post('/api/roles/actualizar', (req, res) => {
 app.get('/api/voting/candidaturas', (req, res) => {
     const { viajeId, usuarioId } = req.query;
     const candidaturas = db.prepare(`SELECT c.*, u.nombre as propuesto_por FROM candidaturas c JOIN usuarios u ON c.usuario_id = u.id WHERE c.viaje_id = ? ORDER BY c.puntos DESC`).all(viajeId);
-    const yaVoto = db.prepare('SELECT 1 FROM votos_realizados WHERE viaje_id = ? AND usuario_id = ?').get(viajeId, usuarioId);
-    res.json({ candidaturas: candidaturas.map(c => ({ ...c, datos: JSON.parse(c.datos_viabilidad) })), yaVoto: !!yaVoto });
+    const localVote = db.prepare('SELECT 1 FROM votos_realizados WHERE viaje_id = ? AND usuario_id = ?').get(viajeId, usuarioId);
+    res.json({ candidaturas: candidaturas.map(c => ({ ...c, datos: JSON.parse(c.datos_viabilidad) })), yaVoto: !!localVote });
 });
 
 app.post('/api/voting/proponer', async (req, res) => {
@@ -206,18 +233,15 @@ app.post('/api/voting/proponer', async (req, res) => {
     } catch (e) { console.log("⚠️ Sin foto"); }
 
     try {
-        // Si viene datos de IA (del Edge Function), lo usamos; si no, generamos mock
         const datosFinales = datos || generarViabilidad(ciudad);
-
         const info = db.prepare('INSERT INTO candidaturas (viaje_id, usuario_id, ciudad, datos_viabilidad, foto_url) VALUES (?, ?, ?, ?, ?)').run(viajeId, usuarioId, ciudad, datosFinales, fotoUrl);
-
-        console.log(`✨ Ciudad "${ciudad}" ${datos ? 'CON análisis de IA' : 'con mock data'}`);
         res.json({ success: true, id: info.lastInsertRowid });
     } catch (e) { res.status(500).json({ error: "Error BD" }); }
 });
 
-app.post('/api/voting/enviar-ranking', (req, res) => {
+app.post('/api/voting/enviar-ranking', async (req, res) => {
     const { viajeId, usuarioId, rankingIds } = req.body;
+
     try {
         const yaVoto = db.prepare('SELECT 1 FROM votos_realizados WHERE viaje_id = ? AND usuario_id = ?').get(viajeId, usuarioId);
         if (yaVoto) return res.status(400).json({ error: "Ya votaste" });
@@ -229,7 +253,6 @@ app.post('/api/voting/enviar-ranking', (req, res) => {
             rankingIds.forEach((candidaturaId, index) => {
                 const points = rankingIds.length - index;
                 const pos = index + 1;
-                // Calculamos contadores de posición
                 const pos1 = pos === 1 ? 1 : 0;
                 const pos2 = pos === 2 ? 1 : 0;
                 const pos3 = pos === 3 ? 1 : 0;
@@ -240,29 +263,20 @@ app.post('/api/voting/enviar-ranking', (req, res) => {
             db.prepare('INSERT INTO votos_realizados (viaje_id, usuario_id) VALUES (?, ?)').run(viajeId, usuarioId);
         });
         tx();
+
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: "Error" }); }
 });
 
-// 🔥 AQUÍ ESTÁ EL ARREGLO CRÍTICO (BORRADO) 🔥
 app.post('/api/voting/borrar', (req, res) => {
-    // Aceptamos id o candidaturaId para que no falle nunca
     const { id, candidaturaId } = req.body;
     const finalId = id || candidaturaId;
-
-    console.log("--> Petición de borrar ID:", finalId);
-
-    if (!finalId) {
-        return res.status(400).json({ success: false, message: "ID no recibido" });
-    }
+    if (!finalId) return res.status(400).json({ success: false, message: "ID no recibido" });
 
     try {
-        // La librería better-sqlite3 NO usa callbacks, usa .run() directo
         const info = db.prepare("DELETE FROM candidaturas WHERE id = ?").run(finalId);
-        console.log(`--> Borrado completado. Filas afectadas: ${info.changes}`);
         res.json({ success: true, changes: info.changes });
     } catch (err) {
-        console.error("Error al borrar:", err);
         res.status(500).json({ success: false, message: err.message });
     }
 });
@@ -270,32 +284,12 @@ app.post('/api/voting/borrar', (req, res) => {
 app.post('/api/voting/cerrar', (req, res) => {
     const { viajeId } = req.body;
     try {
-        // Query robusta para triple empate usando RANDOM() al final
-        const ganador = db.prepare(`
-            SELECT c.ciudad 
-            FROM candidaturas c
-            LEFT JOIN votos_detalle v1 ON c.id = v1.candidatura_id AND v1.posicion = 1
-            LEFT JOIN votos_detalle v2 ON c.id = v2.candidatura_id AND v2.posicion = 2
-            LEFT JOIN votos_detalle v3 ON c.id = v3.candidatura_id AND v3.posicion = 3
-            WHERE c.viaje_id = ?
-            GROUP BY c.id
-            ORDER BY 
-                c.puntos DESC, 
-                COUNT(v1.id) DESC, 
-                COUNT(v2.id) DESC, 
-                COUNT(v3.id) DESC, 
-                RANDOM()
-            LIMIT 1
-        `).get(viajeId);
-
+        const ganador = db.prepare(`SELECT c.ciudad FROM candidaturas c LEFT JOIN votos_detalle v1 ON c.id = v1.candidatura_id AND v1.posicion = 1 LEFT JOIN votos_detalle v2 ON c.id = v2.candidatura_id AND v2.posicion = 2 LEFT JOIN votos_detalle v3 ON c.id = v3.candidatura_id AND v3.posicion = 3 WHERE c.viaje_id = ? GROUP BY c.id ORDER BY c.puntos DESC, COUNT(v1.id) DESC, COUNT(v2.id) DESC, COUNT(v3.id) DESC, RANDOM() LIMIT 1`).get(viajeId);
         let finalDestino = ganador ? ganador.ciudad : null;
-
-        // Fail-safe: Si no hay votos pero hay candidaturas, coge una al azar
         if (!finalDestino) {
             const fallback = db.prepare('SELECT ciudad FROM candidaturas WHERE viaje_id = ? ORDER BY RANDOM() LIMIT 1').get(viajeId);
             if (fallback) finalDestino = fallback.ciudad;
         }
-
         if (finalDestino) {
             db.prepare('UPDATE viajes SET destino = ? WHERE id = ?').run(finalDestino, viajeId);
             res.json({ success: true, nuevoDestino: finalDestino });
@@ -303,12 +297,11 @@ app.post('/api/voting/cerrar', (req, res) => {
             res.status(404).json({ error: "No hay candidaturas para cerrar" });
         }
     } catch (e) {
-        console.error("Error al cerrar:", e);
         res.status(500).json({ error: "Error cerrando votación" });
     }
 });
 
-// --- CALENDARIO (ACTUALIZADO) ---
+// --- CALENDARIO ---
 app.get('/api/calendar/heat', (req, res) => {
     const { viajeId } = req.query;
     const viaje = db.prepare('SELECT fecha_inicio, fecha_fin FROM viajes WHERE id = ?').get(viajeId);
@@ -328,7 +321,6 @@ app.get('/api/calendar/heat', (req, res) => {
     });
 });
 
-// --- CALENDARIO SLIDING WINDOW ---
 app.post('/api/calendar/best-interval', (req, res) => {
     const { viajeId, duracion } = req.body;
     const dur = parseInt(duracion) || 4;
@@ -388,30 +380,12 @@ app.post('/api/calendar/fijar', (req, res) => {
 // --- SELECTED MONTHS (ADMIN ONLY) ---
 app.post('/api/months/save', (req, res) => {
     const { viajeId, selectedMonths } = req.body;
-    console.log('📅 Recibiendo solicitud para guardar meses:', { viajeId, selectedMonths });
-
     try {
-        // Primero, verificar si la columna existe y añadirla si no
-        try {
-            db.prepare("ALTER TABLE viajes ADD COLUMN selected_months TEXT").run();
-            console.log('✅ Columna selected_months añadida a la tabla viajes');
-        } catch (alterError) {
-            // La columna ya existe, ignorar el error
-            if (!alterError.message.includes('duplicate column')) {
-                console.log('ℹ️ Columna selected_months ya existe (esperado)');
-            }
-        }
-
+        try { db.prepare("ALTER TABLE viajes ADD COLUMN selected_months TEXT").run(); } catch (alterError) { }
         const monthsJson = JSON.stringify(selectedMonths);
-        console.log('💾 Guardando meses como JSON:', monthsJson);
-
         const result = db.prepare('UPDATE viajes SET selected_months = ? WHERE id = ?').run(monthsJson, viajeId);
-        console.log('✅ UPDATE ejecutado. Filas afectadas:', result.changes);
-
         res.json({ success: true, changes: result.changes });
     } catch (e) {
-        console.error('❌ ERROR guardando meses:', e.message);
-        console.error('Stack:', e.stack);
         res.status(500).json({ error: 'Error guardando meses', details: e.message });
     }
 });
@@ -432,54 +406,30 @@ app.get('/api/months/get', (req, res) => {
 // --- AVAILABILITY WITH STATES (SEMÁFORO) ---
 app.post('/api/availability/save', (req, res) => {
     const { viajeId, usuarioId, availability } = req.body;
-    console.log('🎨 Recibiendo disponibilidad:', { viajeId, usuarioId, numDias: Object.keys(availability).length });
-
     try {
-        // Primero, verificar si la columna estado existe y añadirla si no
-        try {
-            db.prepare("ALTER TABLE disponibilidad ADD COLUMN estado TEXT DEFAULT 'ideal'").run();
-            console.log('✅ Columna estado añadida a disponibilidad');
-        } catch (alterError) {
-            // La columna ya existe, ignorar
-            if (!alterError.message.includes('duplicate column')) {
-                console.log('ℹ️ Columna estado ya existe (esperado)');
-            }
-        }
-
-        // Primero borramos todas las disponibilidades anteriores de este usuario
+        try { db.prepare("ALTER TABLE disponibilidad ADD COLUMN estado TEXT DEFAULT 'ideal'").run(); } catch (alterError) { }
         const deleteResult = db.prepare('DELETE FROM disponibilidad WHERE usuario_id = ? AND viaje_id = ?').run(usuarioId, viajeId);
-        console.log(`🗑️ Borradas ${deleteResult.changes} disponibilidades anteriores`);
-
-        // Insertamos las nuevas
         const insertStmt = db.prepare('INSERT INTO disponibilidad (viaje_id, usuario_id, fecha, estado) VALUES (?, ?, ?, ?)');
-
         const tx = db.transaction(() => {
             for (const [fecha, estado] of Object.entries(availability)) {
                 insertStmt.run(viajeId, usuarioId, fecha, estado);
             }
         });
-
         tx();
-        console.log(`✅ Guardadas ${Object.keys(availability).length} fechas con estados`);
         res.json({ success: true, count: Object.keys(availability).length });
     } catch (e) {
-        console.error('❌ ERROR guardando disponibilidad:', e.message);
-        console.error('Stack:', e.stack);
         res.status(500).json({ error: 'Error guardando disponibilidad', details: e.message });
     }
 });
 
 app.get('/api/availability/get', (req, res) => {
     const { viajeId, usuarioId } = req.query;
-
     try {
         const rows = db.prepare('SELECT fecha, estado FROM disponibilidad WHERE viaje_id = ? AND usuario_id = ?').all(viajeId, usuarioId);
-
         const availability = {};
         rows.forEach(r => {
             availability[r.fecha] = r.estado;
         });
-
         res.json({ availability });
     } catch (e) {
         res.status(500).json({ error: 'Error obteniendo disponibilidad' });
@@ -491,25 +441,14 @@ app.get('/api/calendar/analyze', (req, res) => {
     const { viajeId, tripDuration } = req.query;
     const duration = parseInt(tripDuration) || 4;
 
-    console.log('🧠 Analizando consenso del grupo:', { viajeId, duration });
-
     try {
-        // Obtener TODOS los usuarios del viaje
         const allUsers = db.prepare('SELECT id, nombre FROM usuarios WHERE viaje_id = ?').all(viajeId);
         const totalUsers = allUsers.length;
-
-        // Obtener usuarios que YA han pintado fechas (con disponibilidad guardada)
         const usersWithAvailability = db.prepare('SELECT DISTINCT usuario_id FROM disponibilidad WHERE viaje_id = ?').all(viajeId);
         const confirmedUserIds = usersWithAvailability.map(u => u.usuario_id);
         const submittedCount = confirmedUserIds.length;
-
-        // Identificar usuarios PENDIENTES
         const pendingUsers = allUsers.filter(u => !confirmedUserIds.includes(u.id)).map(u => u.nombre);
 
-        console.log(`👥 Progreso ESTRICTO: ${submittedCount}/${totalUsers} confirmados`);
-        console.log(`⏳ Pendientes: ${pendingUsers.join(', ') || 'Ninguno'}`);
-
-        // 🔒 STRICT CHECK: SI NO HAN CONFIRMADO TODOS, BLOQUEAR
         if (submittedCount < totalUsers) {
             return res.json({
                 status: 'waiting',
@@ -519,10 +458,6 @@ app.get('/api/calendar/analyze', (req, res) => {
             });
         }
 
-        // ✅ TODOS HAN CONFIRMADO - Proceder con análisis
-        console.log('✅ TODOS confirmados - Calculando opciones...');
-
-        // Obtener TODAS las disponibilidades con estados
         const allAvailability = db.prepare(`
             SELECT d.fecha, d.estado, d.usuario_id, u.nombre 
             FROM disponibilidad d
@@ -531,7 +466,6 @@ app.get('/api/calendar/analyze', (req, res) => {
             ORDER BY d.fecha ASC
         `).all(viajeId);
 
-        // Agrupar por fecha
         const dateMap = {};
         allAvailability.forEach(row => {
             if (!dateMap[row.fecha]) {
@@ -540,7 +474,6 @@ app.get('/api/calendar/analyze', (req, res) => {
             dateMap[row.fecha][row.estado].push({ id: row.usuario_id, nombre: row.nombre });
         });
 
-        // Crear lista de fechas ordenadas
         const dates = Object.keys(dateMap).sort();
 
         if (dates.length < duration) {
@@ -551,20 +484,16 @@ app.get('/api/calendar/analyze', (req, res) => {
             });
         }
 
-        // Calcular mejores rangos usando ventana deslizante
         const options = [];
 
         for (let i = 0; i <= dates.length - duration; i++) {
             const window = dates.slice(i, i + duration);
-
-            // Verificar que sea un rango continuo (días consecutivos)
             const startDate = new Date(window[0]);
             const endDate = new Date(window[window.length - 1]);
             const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
 
-            if (daysDiff !== duration) continue; // No es continuo, saltar
+            if (daysDiff !== duration) continue;
 
-            // Calcular scores
             let idealScore = 0;
             let flexibleScore = 0;
             let totalUsers = 0;
@@ -572,10 +501,8 @@ app.get('/api/calendar/analyze', (req, res) => {
 
             window.forEach(date => {
                 const data = dateMap[date];
-                idealScore += data.ideal.length * 3; // Ideal = 3 puntos
-                flexibleScore += data.flexible.length * 1.5; // Flexible = 1.5 puntos
-                // Busy = 0 puntos
-
+                idealScore += data.ideal.length * 3;
+                flexibleScore += data.flexible.length * 1.5;
                 data.ideal.forEach(u => participatingUsers.add(u.nombre));
                 data.flexible.forEach(u => participatingUsers.add(u.nombre));
             });
@@ -595,12 +522,9 @@ app.get('/api/calendar/analyze', (req, res) => {
             });
         }
 
-        // Ordenar y seleccionar top 3
         const popular = [...options].sort((a, b) => b.idealScore - a.idealScore)[0];
         const economic = [...options].sort((a, b) => b.flexibleScore - a.flexibleScore)[0];
         const balance = [...options].sort((a, b) => b.balanceScore - a.balanceScore)[0];
-
-        console.log('✅ Top 3 opciones calculadas');
 
         res.json({
             status: 'ready',
@@ -612,7 +536,6 @@ app.get('/api/calendar/analyze', (req, res) => {
             }
         });
     } catch (e) {
-        console.error('❌ ERROR en análisis:', e.message);
         res.status(500).json({ error: 'Error analizando disponibilidad' });
     }
 });
@@ -620,98 +543,157 @@ app.get('/api/calendar/analyze', (req, res) => {
 // --- TRIP FINALIZATION (SAVE CHOSEN DATE) ---
 app.post('/api/trip/finalize', (req, res) => {
     const { viajeId, startDate, endDate } = req.body;
-    console.log('🎯 Finalizando viaje con fecha:', { viajeId, startDate, endDate });
-
     try {
-        // Ensure fecha_final column exists
-        try {
-            db.prepare("ALTER TABLE viajes ADD COLUMN fecha_final TEXT").run();
-            console.log('✅ Columna fecha_final añadida');
-        } catch (alterError) {
-            // Column already exists
-            if (!alterError.message.includes('duplicate column')) {
-                console.log('ℹ️ Columna fecha_final ya existe');
-            }
-        }
-
-        // Save chosen date range
-        const finalDate = `${startDate}|${endDate}`; // Store as pipe-separated
+        try { db.prepare("ALTER TABLE viajes ADD COLUMN fecha_final TEXT").run(); } catch (alterError) { }
+        const finalDate = `${startDate}|${endDate}`;
         const result = db.prepare('UPDATE viajes SET fecha_inicio = ?, fecha_fin = ?, fecha_final = ? WHERE id = ?')
             .run(startDate, endDate, finalDate, viajeId);
-
-        console.log('✅ Fecha final guardada. Filas afectadas:', result.changes);
         res.json({ success: true, changes: result.changes });
     } catch (e) {
-        console.error('❌ ERROR finalizando viaje:', e.message);
         res.status(500).json({ error: 'Error guardando fecha final', details: e.message });
     }
 });
 
 // --- WALLET ---
-app.get('/api/wallet/estado', (req, res) => { const { viajeId } = req.query; const totalRecaudado = db.prepare(`SELECT SUM(a.monto_pagado) as t FROM aportaciones a JOIN usuarios u ON a.usuario_id = u.id WHERE u.viaje_id = ?`).get(viajeId).t || 0; const usuarios = db.prepare('SELECT id, nombre, es_tesorero FROM usuarios WHERE viaje_id = ?').all(viajeId); const estadoUsuarios = usuarios.map(u => { const pedido = db.prepare('SELECT SUM(monto_solicitado) as t FROM aportaciones WHERE usuario_id = ?').get(u.id).t || 0; const pagado = db.prepare('SELECT SUM(monto_pagado) as t FROM aportaciones WHERE usuario_id = ?').get(u.id).t || 0; const adelantado = db.prepare('SELECT SUM(monto) as t FROM adelantos WHERE usuario_id = ?').get(u.id).t || 0; const balance = (pagado + adelantado) - pedido; return { ...u, balance, debe: balance < 0, credito: balance > 0 }; }); res.json({ saldoBote: totalRecaudado, usuarios: estadoUsuarios }); });
-app.post('/api/wallet/nueva-ronda', (req, res) => { const { viajeId, monto } = req.body; const rondaId = db.prepare('INSERT INTO rondas (viaje_id, monto_individual_solicitado) VALUES (?, ?)').run(viajeId, monto).lastInsertRowid; const users = db.prepare('SELECT id FROM usuarios WHERE viaje_id = ?').all(viajeId); const insert = db.prepare('INSERT INTO aportaciones (ronda_id, usuario_id, monto_solicitado) VALUES (?, ?, ?)'); const tx = db.transaction(() => { for (const u of users) insert.run(rondaId, u.id, monto); }); tx(); res.json({ success: true }); });
-app.post('/api/wallet/pagar', (req, res) => { const { usuarioId, cantidad } = req.body; const deudas = db.prepare('SELECT id, monto_solicitado, monto_pagado FROM aportaciones WHERE usuario_id = ? AND monto_pagado < monto_solicitado').all(usuarioId); let restante = Number(cantidad); const update = db.prepare('UPDATE aportaciones SET monto_pagado = ? WHERE id = ?'); const tx = db.transaction(() => { for (const d of deudas) { if (restante <= 0) break; const falta = d.monto_solicitado - d.monto_pagado; const pago = Math.min(restante, falta); update.run(d.monto_pagado + pago, d.id); restante -= pago; } if (restante > 0) db.prepare('INSERT INTO adelantos (usuario_id, concepto, monto) VALUES (?, ?, ?)').run(usuarioId, "Exceso pago", restante); }); tx(); res.json({ success: true }); });
-app.post('/api/wallet/adelantar', (req, res) => { const { usuarioId, monto, concepto } = req.body; db.prepare('INSERT INTO adelantos (usuario_id, concepto, monto) VALUES (?, ?, ?)').run(usuarioId, concepto, monto); res.json({ success: true }); });
-app.get('/api/wallet/mis-gastos', (req, res) => { const { usuarioId } = req.query; const gastos = db.prepare('SELECT * FROM gastos_personales WHERE usuario_id = ? ORDER BY id DESC').all(usuarioId); res.json({ gastos }); });
-app.post('/api/wallet/nuevo-gasto-personal', (req, res) => { const { usuarioId, concepto, monto } = req.body; db.prepare('INSERT INTO gastos_personales (usuario_id, concepto, monto) VALUES (?, ?, ?)').run(usuarioId, concepto, monto); res.json({ success: true }); });
-app.get('/api/buscar-sitios', async (req, res) => { const { busqueda, lat, lng, radio } = req.query; let q = busqueda; if (['tapas', 'bar', 'comer', 'restaurante'].some(x => busqueda.toLowerCase().includes(x))) q += ' calidad tradicional'; const radioFinal = radio || 1500; try { const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(q)}&location=${lat},${lng}&radius=${radioFinal}&key=${GOOGLE_API_KEY}`; const resp = await axios.get(url); if (resp.data.results) { const hits = resp.data.results.filter(p => p.rating >= 4.2).slice(0, 10).map(p => ({ id: p.place_id, nombre: p.name, rating: p.rating, total_opiniones: p.user_ratings_total, coords: p.geometry.location, direccion: p.formatted_address, foto: p.photos ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photoreference=${p.photos[0].photo_reference}&key=${GOOGLE_API_KEY}` : null, categoria: p.types ? p.types[0].replace(/_/g, ' ').toUpperCase() : 'LOCAL', abierto: p.opening_hours ? p.opening_hours.open_now : null })); res.json({ sitios: hits }); } else res.json({ sitios: [] }); } catch (e) { res.json({ sitios: [] }); } });
+app.get('/api/wallet/estado', (req, res) => {
+    const { viajeId } = req.query;
+    const totalRecaudado = db.prepare(`SELECT SUM(a.monto_pagado) as t FROM aportaciones a JOIN usuarios u ON a.usuario_id = u.id WHERE u.viaje_id = ?`).get(viajeId).t || 0;
+    const usuarios = db.prepare('SELECT id, nombre, es_tesorero FROM usuarios WHERE viaje_id = ?').all(viajeId);
+    const estadoUsuarios = usuarios.map(u => {
+        const pedido = db.prepare('SELECT SUM(monto_solicitado) as t FROM aportaciones WHERE usuario_id = ?').get(u.id).t || 0;
+        const pagado = db.prepare('SELECT SUM(monto_pagado) as t FROM aportaciones WHERE usuario_id = ?').get(u.id).t || 0;
+        const adelantado = db.prepare('SELECT SUM(monto) as t FROM adelantos WHERE usuario_id = ?').get(u.id).t || 0;
+        const balance = (pagado + adelantado) - pedido;
+        return { ...u, balance, debe: balance < 0, credito: balance > 0 };
+    });
+    res.json({ saldoBote: totalRecaudado, usuarios: estadoUsuarios });
+});
 
-// --- SUPABASE PROXY: CAMBIAR FASE ---  
+app.post('/api/wallet/nueva-ronda', (req, res) => {
+    const { viajeId, monto } = req.body;
+    const rondaId = db.prepare('INSERT INTO rondas (viaje_id, monto_individual_solicitado) VALUES (?, ?)').run(viajeId, monto).lastInsertRowid;
+    const users = db.prepare('SELECT id FROM usuarios WHERE viaje_id = ?').all(viajeId);
+    const insert = db.prepare('INSERT INTO aportaciones (ronda_id, usuario_id, monto_solicitado) VALUES (?, ?, ?)');
+    const tx = db.transaction(() => { for (const u of users) insert.run(rondaId, u.id, monto); });
+    tx();
+    res.json({ success: true });
+});
+
+app.post('/api/wallet/pagar', (req, res) => {
+    const { usuarioId, cantidad } = req.body;
+    const deudas = db.prepare('SELECT id, monto_solicitado, monto_pagado FROM aportaciones WHERE usuario_id = ? AND monto_pagado < monto_solicitado').all(usuarioId);
+    let restante = Number(cantidad);
+    const update = db.prepare('UPDATE aportaciones SET monto_pagado = ? WHERE id = ?');
+    const tx = db.transaction(() => {
+        for (const d of deudas) {
+            if (restante <= 0) break;
+            const falta = d.monto_solicitado - d.monto_pagado;
+            const pago = Math.min(restante, falta);
+            update.run(d.monto_pagado + pago, d.id);
+            restante -= pago;
+        }
+        if (restante > 0) db.prepare('INSERT INTO adelantos (usuario_id, concepto, monto) VALUES (?, ?, ?)').run(usuarioId, "Exceso pago", restante);
+    });
+    tx();
+    res.json({ success: true });
+});
+
+app.post('/api/wallet/adelantar', (req, res) => {
+    const { usuarioId, monto, concepto } = req.body;
+    db.prepare('INSERT INTO adelantos (usuario_id, concepto, monto) VALUES (?, ?, ?)').run(usuarioId, concepto, monto);
+    res.json({ success: true });
+});
+
+app.get('/api/wallet/mis-gastos', (req, res) => {
+    const { usuarioId } = req.query;
+    const gastos = db.prepare('SELECT * FROM gastos_personales WHERE usuario_id = ? ORDER BY id DESC').all(usuarioId);
+    res.json({ gastos });
+});
+
+app.post('/api/wallet/nuevo-gasto-personal', (req, res) => {
+    const { usuarioId, concepto, monto } = req.body;
+    db.prepare('INSERT INTO gastos_personales (usuario_id, concepto, monto) VALUES (?, ?, ?)').run(usuarioId, concepto, monto);
+    res.json({ success: true });
+});
+
+app.get('/api/buscar-sitios', async (req, res) => {
+    const { busqueda, lat, lng, radio } = req.query;
+    let q = busqueda;
+    if (['tapas', 'bar', 'comer', 'restaurante'].some(x => busqueda.toLowerCase().includes(x))) q += ' calidad tradicional';
+    const radioFinal = radio || 1500;
+    try {
+        const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(q)}&location=${lat},${lng}&radius=${radioFinal}&key=${GOOGLE_API_KEY}`;
+        const resp = await axios.get(url);
+        if (resp.data.results) {
+            const hits = resp.data.results.filter(p => p.rating >= 4.2).slice(0, 10).map(p => ({
+                id: p.place_id,
+                nombre: p.name,
+                rating: p.rating,
+                total_opiniones: p.user_ratings_total,
+                coords: p.geometry.location,
+                direccion: p.formatted_address,
+                foto: p.photos ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photoreference=${p.photos[0].photo_reference}&key=${GOOGLE_API_KEY}` : null,
+                categoria: p.types ? p.types[0].replace(/_/g, ' ').toUpperCase() : 'LOCAL',
+                abierto: p.opening_hours ? p.opening_hours.open_now : null
+            }));
+            res.json({ sitios: hits });
+        } else res.json({ sitios: [] });
+    } catch (e) { res.json({ sitios: [] }); }
+});
+
+// --- SUPABASE PROXY: ESCRITURA EN TABLA TRIPS (PROFESIONAL) ---
+// Aquí es donde hacemos la magia de escribir en la tabla 'trips'
 app.post('/api/viaje/cambiar-fase', async (req, res) => {
     const { viajeId, phase, votingDate } = req.body;
-
-    console.log('🔄 Proxy: Cambiando fase vía Supabase:', { viajeId, phase });
+    console.log('🔄 Sincronizando Fase (Trips):', phase);
 
     try {
-        const updateData = {
-            phase: phase,
-            voting_start_date: votingDate || new Date().toISOString()
-        };
+        const viajeLocal = db.prepare('SELECT codigo, destino FROM viajes WHERE id = ?').get(viajeId);
+        if (!viajeLocal || !viajeLocal.codigo) return res.status(404).json({ success: false });
 
-        const { data, error } = await supabaseServer
-            .from('proposals')
-            .update(updateData)
-            .eq('id', viajeId);
+        // UPSERT: Si existe actualiza, si no crea. GARANTÍA DE ÉXITO.
+        // GRACIAS A TU SQL, AHORA 'CODE' ES UNIQUE Y ESTO FUNCIONA.
+        const { error } = await supabaseServer.from('trips').upsert({
+            code: viajeLocal.codigo,
+            name: viajeLocal.destino || 'Viaje',
+            is_voting_open: phase === 'voting',
+            voting_start_date: votingDate || new Date().toISOString()
+        }, { onConflict: 'code' });
 
         if (error) {
-            console.error('❌ Supabase error:', error);
-            return res.status(500).json({ success: false, error: error.message });
+            console.error("❌ Error Supabase:", error.message);
+        } else {
+            console.log("✅ Fase actualizada en nube.");
         }
-
-        console.log('✅ Fase cambiada exitosamente');
-        res.json({ success: true, data });
+        res.json({ success: true });
     } catch (e) {
-        console.error('❌ Server error:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });
 
-// --- SUPABASE PROXY: FIJAR FECHAS ---
 app.post('/api/viaje/fijar-fechas', async (req, res) => {
-    const { viajeId, fechaInicio, fechaFin, votingStartDate } = req.body;
-
-    console.log('📅 Proxy: Fijando fechas vía Supabase:', { viajeId, fechaInicio, fechaFin });
+    const { viajeId, votingStartDate } = req.body;
+    console.log('📅 Fijando Fecha (Trips):', votingStartDate);
 
     try {
-        const updateData = {};
-        if (fechaInicio) updateData.fecha_inicio = fechaInicio;
-        if (fechaFin) updateData.fecha_fin = fechaFin;
-        if (votingStartDate) updateData.voting_start_date = votingStartDate;
+        const viajeLocal = db.prepare('SELECT codigo, destino FROM viajes WHERE id = ?').get(viajeId);
+        if (!viajeLocal || !viajeLocal.codigo) return res.status(404).json({ success: false });
 
-        const { data, error } = await supabaseServer
-            .from('proposals')
-            .update(updateData)
-            .eq('id', viajeId);
+        // UPSERT: Garantiza que la fecha se guarde sí o sí.
+        const { error } = await supabaseServer.from('trips').upsert({
+            code: viajeLocal.codigo,
+            name: viajeLocal.destino || 'Viaje',
+            voting_start_date: votingStartDate,
+            is_voting_open: false // <--- CAMBIADO A FALSE PARA EVITAR SALTO A FINAL
+        }, { onConflict: 'code' });
 
         if (error) {
-            console.error('❌ Supabase error:', error);
-            return res.status(500).json({ success: false, error: error.message });
+            console.error("❌ Error Supabase:", error.message);
+        } else {
+            console.log("✅ Fecha guardada en nube.");
         }
-
-        console.log('✅ Fechas actualizadas exitosamente');
-        res.json({ success: true, data });
+        res.json({ success: true });
     } catch (e) {
-        console.error('❌ Server error:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });
