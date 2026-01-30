@@ -9,6 +9,7 @@ import { TripSummary } from './TripSummary';
 import { VotingCountdown } from './VotingCountdown';
 import { EliminationScreen } from './EliminationScreen';
 import { VotingBoard } from './VotingBoard';
+import { VotingWaitingScreen } from './VotingWaitingScreen';
 import { supabase } from '../../services/supabase';
 import { ProposalModal } from './OraculoModal';
 
@@ -102,9 +103,10 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const [winnerData, setWinnerData] = useState<any>(null);
 
     // Olympic System / Porcos Bravos
-    const [votingStartDate, setVotingStartDate] = useState<string | null>(null);
+    const [votingStartDate, setVotingStartDate] = useState<Date | null>(null);
     const [isVotingOpen, setIsVotingOpen] = useState(false);
     const [showDatePicker, setShowDatePicker] = useState(false);
+    const [allUsersVoted, setAllUsersVoted] = useState(false);
 
     // Roles
     const [showRolesModal, setShowRolesModal] = useState(false);
@@ -165,13 +167,11 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         if (user) localStorage.setItem('travelSphereUser', JSON.stringify(user));
     }, [user]);
 
+    // Sync voting state from database when viajeId changes
     useEffect(() => {
-        // Al cambiar de viaje, pantalla en blanco INMEDIATAMENTE
-        setCandidaturas([]);
-        setMyRanking([]);
-        setVotingStartDate(null);
-        setIsVotingOpen(false);
-        setHasVoted(false);
+        if (user?.viajeId) {
+            syncVotingState();
+        }
     }, [user?.viajeId]);
 
     // --- EL LATIDO DEL SISTEMA (HEARTBEAT) ---
@@ -182,21 +182,19 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         return () => clearInterval(timer);
     }, []);
 
-    // --- POLLING ESTRATÉGICO: Se detiene si trabajas ---
+    // --- POLLING ---
     useEffect(() => {
         if (!user) return;
-
-        // SI HAY UN MODAL, PARAMOS TODO.
-        // Esto evita el choque de trenes.
-        if (modalAction) return;
-
         let isMounted = true;
         const intervalId = setInterval(async () => {
             if (!isMounted) return;
+
+            // ⚠️ NO REFRESCAR SI ESTÁS VOTANDO (evita que se resetee el orden de ciudades)
+            if (view === 'voting_room') return;
+
             try {
                 await refreshCandidates();
-                await refreshCalendar();
-                await refreshWallet();
+                // ❌ REMOVIDO: refreshCalendar() y refreshWallet() no existen
                 await checkMyRoles();
             } catch (error) {
                 console.error("Polling error", error);
@@ -212,6 +210,44 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     // --- FUNCIONES AUXILIARES ---
     const showAlert = (message: string) => setAlertConfig({ type: 'alert', message, onConfirm: () => setAlertConfig(null) });
     const showConfirm = (message: string, onConfirm: () => void) => setAlertConfig({ type: 'confirm', message, onConfirm, onCancel: () => setAlertConfig(null) });
+
+    // Sync voting state from database
+    const syncVotingState = async () => {
+        if (!user?.viajeId) return;
+
+        try {
+            const res = await fetch(`http://localhost:3005/api/viajes/${user.viajeId}/voting-state`);
+            const data = await res.json();
+
+            console.log('🔄 [SYNC VOTING STATE]', data);
+
+            if (data.voting_start_date) {
+                setVotingStartDate(new Date(data.voting_start_date));
+            } else {
+                setVotingStartDate(null);
+            }
+            setIsVotingOpen(data.voting_phase === 'VOTING');
+
+        } catch (error) {
+            console.error('❌ Error syncing voting state:', error);
+        }
+    };
+
+    // Update voting state in database
+    const updateVotingState = async (updates: any) => {
+        if (!user?.viajeId) return;
+
+        try {
+            await fetch(`http://localhost:3005/api/viajes/${user.viajeId}/voting-state`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updates)
+            });
+            console.log('💾 [SAVED VOTING STATE]', updates);
+        } catch (error) {
+            console.error('❌ Error updating voting state:', error);
+        }
+    };
 
     const checkMyRoles = async () => {
         if (!user) return;
@@ -564,16 +600,52 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         const shouldShowVoting = isTimeUp || isVotingOpen;
 
         if (shouldShowVoting) {
-            // FASE DE RESULTADOS (Si ya votó)
+            // Si ya votó...
             if (hasVoted) {
+                // Pero NO todos han votado → Pantalla de Espera
+                if (!allUsersVoted) {
+                    return (
+                        <VotingWaitingScreen
+                            viajeId={user.viajeId}
+                            onAllVoted={() => setAllUsersVoted(true)}
+                            onBack={() => setView('dashboard')}
+                            user={user}
+                        />
+                    );
+                }
+
+                // TODOS han votado → Mostrar resultados
                 return (
                     <div className="fixed inset-0 z-[200] bg-[#F8F5F2] flex flex-col">
                         <div className="flex-1 overflow-y-auto p-6 pb-32">
-                            {/* SOLUCIÓN AL FLASH: Pasamos "phase='voting'" para que no falle si lo pide */}
                             <EliminationScreen
                                 candidaturas={candidaturas}
-                                onVote={refreshCandidates}
-                                phase="purga" // Valor por defecto seguro
+                                onVote={async (eliminatedIds: string[]) => {
+                                    console.log('🗑️ Eliminando ciudades:', eliminatedIds);
+
+                                    // 1. PRIMERO: Eliminar las ciudades caídas de la base de datos
+                                    for (const id of eliminatedIds) {
+                                        await fetch('http://localhost:3005/api/voting/borrar', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ candidaturaId: id })
+                                        });
+                                    }
+                                    // Resetear votos en el backend
+                                    await fetch('http://localhost:3005/api/voting/reset-votes', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ viajeId: user.viajeId })
+                                    });
+
+                                    // Resetear estados locales
+                                    setHasVoted(false);
+                                    setAllUsersVoted(false);
+
+                                    // Refrescar candidaturas (ahora mostrarán solo las sobrevivientes)
+                                    await refreshCandidates();
+                                }}
+                                phase="purga"
                             />
                         </div>
                     </div>
@@ -641,7 +713,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                         <div className="animate-in slide-in-from-bottom-4">
                             <div className="mb-8">
                                 <VotingCountdown
-                                    votingDate={votingStartDate}
+                                    votingDate={votingStartDate?.toISOString() || ''}
                                     isAdmin={false}
                                     candidatesCount={candidaturas.length}
                                     onStartVoting={() => {
@@ -737,8 +809,22 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                                     })
                                 });
 
-                                setVotingStartDate(newDate);
+                                setVotingStartDate(new Date(newDate)); // newDate is ISO string
                                 setShowDatePicker(false);
+
+                                // Save voting state to database when date is confirmed
+                                if (newDate) { // Use newDate as it's the confirmed one
+                                    setIsVotingOpen(true);
+
+                                    // Save to database
+                                    await updateVotingState({
+                                        voting_start_date: newDate, // Already ISO string
+                                        voting_phase: 'VOTING',
+                                        total_cities_initial: candidaturas.length
+                                    });
+
+                                    setModalAction(null); // Assuming this closes the modal or related action
+                                }
                             }}
                             className="w-full py-4 bg-[#1B4332] text-white rounded-xl font-bold uppercase tracking-widest hover:bg-[#2D6A4F] shadow-lg transition-transform active:scale-95"
                         >

@@ -241,10 +241,14 @@ app.post('/api/voting/proponer', async (req, res) => {
 
 app.post('/api/voting/enviar-ranking', async (req, res) => {
     const { viajeId, usuarioId, rankingIds } = req.body;
+    console.log('🗳️  [VOTO] Intento de guardar voto. ViajeId:', viajeId, '| UsuarioId:', usuarioId);
 
     try {
         const yaVoto = db.prepare('SELECT 1 FROM votos_realizados WHERE viaje_id = ? AND usuario_id = ?').get(viajeId, usuarioId);
-        if (yaVoto) return res.status(400).json({ error: "Ya votaste" });
+        if (yaVoto) {
+            console.log('   ⚠️  Usuario ya había votado');
+            return res.status(400).json({ error: "Ya votaste" });
+        }
 
         const updatePoints = db.prepare('UPDATE candidaturas SET puntos = puntos + ?, votos_pos1 = votos_pos1 + ?, votos_pos2 = votos_pos2 + ?, votos_pos3 = votos_pos3 + ? WHERE id = ?');
         const insertDetalle = db.prepare('INSERT INTO votos_detalle (viaje_id, usuario_id, candidatura_id, posicion) VALUES (?, ?, ?, ?)');
@@ -264,8 +268,56 @@ app.post('/api/voting/enviar-ranking', async (req, res) => {
         });
         tx();
 
+        console.log('   ✅ Voto guardado correctamente');
         res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: "Error" }); }
+    } catch (e) {
+        console.error('   ❌ Error al guardar voto:', e);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+// --- PROGRESO DE VOTACIÓN (Sincronización Multi-Usuario) ---
+app.get('/api/voting/progreso', (req, res) => {
+    const { viajeId } = req.query;
+    console.log('📊 [PROGRESO] Request recibida. viajeId:', viajeId);
+
+    try {
+        // Total de usuarios en el viaje
+        const totalResult = db.prepare('SELECT COUNT(*) as total FROM usuarios WHERE viaje_id = ?').get(viajeId);
+        const totalUsers = totalResult.total;
+        console.log('   👥 Total usuarios en viaje:', totalUsers);
+
+        // Usuarios que han votado
+        const votedResult = db.prepare('SELECT COUNT(DISTINCT usuario_id) as voted FROM votos_realizados WHERE viaje_id = ?').get(viajeId);
+        const votedUsers = votedResult.voted;
+        console.log('   ✅ Usuarios que han votado:', votedUsers);
+
+        // IDs de quienes votaron
+        const votedIds = db.prepare('SELECT usuario_id FROM votos_realizados WHERE viaje_id = ?').all(viajeId);
+        const votedUserIds = new Set(votedIds.map(v => v.usuario_id));
+
+        // Nombres de usuarios pendientes (la "Lista de la Vergüenza")
+        const allUsers = db.prepare('SELECT id, nombre FROM usuarios WHERE viaje_id = ?').all(viajeId);
+        console.log('   📋 Usuarios totales encontrados:', allUsers.length, allUsers.map(u => u.nombre));
+
+        const pendingUsers = allUsers
+            .filter(u => !votedUserIds.has(u.id))
+            .map(u => u.nombre);
+        console.log('   ⏳ Usuarios pendientes:', pendingUsers);
+
+        const response = {
+            totalUsers,
+            votedUsers,
+            pendingUsers,
+            allVoted: votedUsers >= totalUsers && totalUsers > 0
+        };
+        console.log('   📤 Respuesta:', response);
+
+        res.json(response);
+    } catch (e) {
+        console.error("❌ Error en /api/voting/progreso:", e);
+        res.status(500).json({ error: 'Error obteniendo progreso' });
+    }
 });
 
 app.post('/api/voting/borrar', (req, res) => {
@@ -281,6 +333,31 @@ app.post('/api/voting/borrar', (req, res) => {
     }
 });
 
+// --- RESETEAR VOTOS PARA NUEVA RONDA (mantener ciudades eliminadas) ---
+app.post('/api/voting/reset-votes', (req, res) => {
+    const { viajeId } = req.body;
+    console.log('🔄 [RESET VOTOS] Limpiando votos para nueva ronda. ViajeId:', viajeId);
+
+    try {
+        // Eliminamos SOLO los votos, no las candidaturas eliminadas
+        db.prepare('DELETE FROM votos_realizados WHERE viaje_id = ?').run(viajeId);
+        db.prepare('DELETE FROM votos_detalle WHERE viaje_id = ?').run(viajeId);
+
+        // Reseteamos los contadores de puntos y votos de todas las candidaturas restantes
+        db.prepare(`
+            UPDATE candidaturas 
+            SET puntos = 0, votos_pos1 = 0, votos_pos2 = 0, votos_pos3 = 0 
+            WHERE viaje_id = ?
+        `).run(viajeId);
+
+        console.log('   ✅ Votos limpiados, listo para nueva ronda');
+        res.json({ success: true });
+    } catch (e) {
+        console.error('   ❌ Error al resetear votos:', e);
+        res.status(500).json({ error: 'Error al resetear votos' });
+    }
+});
+
 app.post('/api/voting/cerrar', (req, res) => {
     const { viajeId } = req.body;
     try {
@@ -292,12 +369,90 @@ app.post('/api/voting/cerrar', (req, res) => {
         }
         if (finalDestino) {
             db.prepare('UPDATE viajes SET destino = ? WHERE id = ?').run(finalDestino, viajeId);
-            res.json({ success: true, nuevoDestino: finalDestino });
+            res.json({ ganador: finalDestino });
         } else {
             res.status(404).json({ error: "No hay candidaturas para cerrar" });
         }
+    } catch (e) { res.status(500).json({ error: 'Error' }); }
+});
+
+// --- ENDPOINTS DE ESTADO DE VOTACIÓN ---
+
+// GET voting state for a trip
+app.get('/api/viajes/:id/voting-state', (req, res) => {
+    const { id } = req.params;
+    console.log('📊 [GET VOTING STATE] ViajeId:', id);
+
+    try {
+        const viaje = db.prepare(`
+            SELECT voting_start_date, voting_phase, current_round, total_cities_initial 
+            FROM viajes 
+            WHERE id = ?
+        `).get(id);
+
+        if (!viaje) {
+            return res.status(404).json({ error: 'Viaje not found' });
+        }
+
+        const state = {
+            voting_start_date: viaje.voting_start_date,
+            voting_phase: viaje.voting_phase || 'PLANNING',
+            current_round: viaje.current_round || 1,
+            total_cities_initial: viaje.total_cities_initial || 0
+        };
+
+        console.log('   ✅ State:', state);
+        res.json(state);
     } catch (e) {
-        res.status(500).json({ error: "Error cerrando votación" });
+        console.error('   ❌ Error:', e);
+        res.status(500).json({ error: 'Error fetching voting state' });
+    }
+});
+
+// POST update voting state for a trip
+app.post('/api/viajes/:id/voting-state', (req, res) => {
+    const { id } = req.params;
+    const { voting_start_date, voting_phase, current_round, total_cities_initial } = req.body;
+
+    console.log('💾 [UPDATE VOTING STATE] ViajeId:', id);
+    console.log('   Data:', { voting_start_date, voting_phase, current_round, total_cities_initial });
+
+    try {
+        // Build dynamic update query based on provided fields
+        const updates = [];
+        const values = [];
+
+        if (voting_start_date !== undefined) {
+            updates.push('voting_start_date = ?');
+            values.push(voting_start_date);
+        }
+        if (voting_phase !== undefined) {
+            updates.push('voting_phase = ?');
+            values.push(voting_phase);
+        }
+        if (current_round !== undefined) {
+            updates.push('current_round = ?');
+            values.push(current_round);
+        }
+        if (total_cities_initial !== undefined) {
+            updates.push('total_cities_initial = ?');
+            values.push(total_cities_initial);
+        }
+
+        if (updates.length === 0) {
+            return res.status(400).json({ error: 'No fields to update' });
+        }
+
+        values.push(id); // Add viajeId at the end for WHERE clause
+
+        const sql = `UPDATE viajes SET ${updates.join(', ')} WHERE id = ?`;
+        db.prepare(sql).run(...values);
+
+        console.log('   ✅ State updated');
+        res.json({ success: true });
+    } catch (e) {
+        console.error('   ❌ Error:', e);
+        res.status(500).json({ error: 'Error updating voting state' });
     }
 });
 

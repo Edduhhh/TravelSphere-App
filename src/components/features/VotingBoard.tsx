@@ -17,7 +17,6 @@ import {
     useSortable
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { supabase } from '../../services/supabase';
 import { Save, GripVertical, Trophy, Info, AlertTriangle, Skull } from 'lucide-react';
 // IMPORTANTE: Importamos TU lógica
 import { calculateRoundRules } from '../../utils/votingAlgorithm';
@@ -83,7 +82,18 @@ interface VotingBoardProps {
 }
 
 export const VotingBoard: React.FC<VotingBoardProps> = ({ candidaturas, user, onVoteSaved }) => {
-    const [cities, setCities] = useState(candidaturas);
+    // Función para barajar array (Fisher-Yates shuffle)
+    const shuffleArray = (array: any[]) => {
+        const shuffled = [...array];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        return shuffled;
+    };
+
+    // ORDEN ALEATORIO INICIAL para cada usuario
+    const [cities, setCities] = useState(() => shuffleArray(candidaturas));
     const [activeId, setActiveId] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
 
@@ -117,19 +127,25 @@ export const VotingBoard: React.FC<VotingBoardProps> = ({ candidaturas, user, on
     const handleSaveRanking = async () => {
         setSaving(true);
         try {
-            // Guardamos la realidad (tu orden -> base de datos)
-            const voteData = cities.map((city, index) => ({
-                trip_id: user.viajeId,
-                user_id: user.id,
-                city_id: city.id,
-                rank_position: index + 1,
-                round_number: 1
-            }));
+            // Usamos el endpoint del backend que ya existe y funciona
+            const rankingIds = cities.map(city => city.id);
 
-            await supabase.from('votes').delete().match({ user_id: user.id, trip_id: user.viajeId });
-            const { error } = await supabase.from('votes').insert(voteData);
+            const response = await fetch('http://localhost:3005/api/voting/enviar-ranking', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    viajeId: user.viajeId,
+                    usuarioId: user.id,
+                    rankingIds: rankingIds
+                })
+            });
 
-            if (error) throw error;
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                throw new Error(data.error || 'Error al guardar');
+            }
+
             onVoteSaved();
 
         } catch (error) {

@@ -5,7 +5,7 @@ import { calculateSurvivalResults, Vote } from '../../utils/votingAlgorithm';
 // 1. AQUÍ ESTABA EL ERROR: Añadimos 'phase' a la definición para que Typescript no se queje
 interface EliminationScreenProps {
     candidaturas: any[];
-    onVote: () => void;
+    onVote: (eliminatedIds: string[]) => void;
     phase: string; // <--- ESTO FALTABA
 }
 
@@ -93,7 +93,7 @@ export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidatur
                 </div>
 
                 <button
-                    onClick={onVote}
+                    onClick={() => onVote(eliminatedIds)}
                     className="w-full py-5 bg-[#1B4332] text-white rounded-xl font-bold text-lg shadow-2xl flex items-center justify-center gap-3 hover:bg-[#2D6A4F] active:scale-95 transition-all"
                 >
                     CONTINUAR <ArrowRight />
