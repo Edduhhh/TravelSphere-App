@@ -12,6 +12,7 @@ import { VotingBoard } from './VotingBoard';
 import { VotingWaitingScreen } from './VotingWaitingScreen';
 import { supabase } from '../../services/supabase';
 import { ProposalModal } from './OraculoModal';
+import { useVotingRealtimeSync } from '../../hooks/useVotingRealtimeSync';
 
 // DND-KIT IMPORTS
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, TouchSensor } from '@dnd-kit/core';
@@ -144,6 +145,25 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const [inputValue, setInputValue] = useState('');
     const [inputValue2, setInputValue2] = useState('');
 
+    // Trip code for Realtime sync
+    const [tripCode, setTripCode] = useState<string | null>(null);
+
+    // 🔥 REALTIME SYNC - Sincronización instantánea con Supabase
+    useVotingRealtimeSync(tripCode, (data) => {
+        console.log('🔥 [REALTIME CALLBACK] Actualizando estado local:', data);
+
+        if (data.voting_start_date) {
+            const newDate = new Date(data.voting_start_date);
+            setVotingStartDate(newDate);
+            console.log('   ✅ Fecha actualizada:', newDate);
+        }
+
+        if (data.is_voting_open !== undefined) {
+            setIsVotingOpen(data.is_voting_open);
+            console.log('   ✅ Votación abierta:', data.is_voting_open);
+        }
+    });
+
     const sensors = useSensors(
         useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
         useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -156,6 +176,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         if (savedUser) {
             const parsed = JSON.parse(savedUser);
             setUser(parsed);
+            setTripCode(parsed.viajeCodigo); // 🔥 Activar Realtime sync con código guardado
             setView('dashboard');
             if (parsed.destino && !parsed.destino.startsWith("PENDIENTE")) {
                 fetchCityCoords(parsed.destino);
@@ -167,13 +188,6 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         if (user) localStorage.setItem('travelSphereUser', JSON.stringify(user));
     }, [user]);
 
-    // Sync voting state from database when viajeId changes
-    useEffect(() => {
-        if (user?.viajeId) {
-            syncVotingState();
-        }
-    }, [user?.viajeId]);
-
     // --- EL LATIDO DEL SISTEMA (HEARTBEAT) ---
     useEffect(() => {
         const timer = setInterval(() => {
@@ -182,30 +196,36 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         return () => clearInterval(timer);
     }, []);
 
-    // --- POLLING ---
+    // --- POLLING PARA CANDIDATOS Y ROLES (Ya no necesitamos polling de fecha) ---
     useEffect(() => {
         if (!user) return;
         let isMounted = true;
-        const intervalId = setInterval(async () => {
+
+        const poll = async () => {
             if (!isMounted) return;
 
-            // ⚠️ NO REFRESCAR SI ESTÁS VOTANDO (evita que se resetee el orden de ciudades)
-            if (view === 'voting_room') return;
-
             try {
-                await refreshCandidates();
-                // ❌ REMOVIDO: refreshCalendar() y refreshWallet() no existen
-                await checkMyRoles();
+                // Solo refrescar candidatos y roles si NO estamos votando activamente
+                if (view !== 'voting_room') {
+                    await refreshCandidates();
+                    await checkMyRoles();
+                }
             } catch (error) {
                 console.error("Polling error", error);
             }
-        }, 3000);
+        };
+
+        // Ejecutar inmediatamente
+        poll();
+
+        // Intervalo de 5 segundos (menos agresivo, solo para candidatos)
+        const intervalId = setInterval(poll, 5000);
 
         return () => {
             isMounted = false;
             clearInterval(intervalId);
         };
-    }, [user, view, modalAction]);
+    }, [user, view]);
 
     // --- FUNCIONES AUXILIARES ---
     const showAlert = (message: string) => setAlertConfig({ type: 'alert', message, onConfirm: () => setAlertConfig(null) });
@@ -249,14 +269,45 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         }
     };
 
+    // --- EMERGENCY RESET (Para arreglar bloqueos) ---
+    const handleResetVote = async () => {
+        if (!user) return;
+        if (!confirm("Esto reiniciará tu proceso de votación. ¿Estás seguro?")) return;
+
+        try {
+            await fetch('http://localhost:3005/api/voting/anular-voto', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ viajeId: user.viajeId, usuarioId: user.id })
+            });
+        } catch (e) { console.error(e); }
+
+        setHasVoted(false);
+        refreshCandidates();
+    };
+
     const checkMyRoles = async () => {
         if (!user) return;
+
+        // 🔥 CRITICAL: Validate user has ID before ANY operation
+        if (!user.id) {
+            console.error('❌ CRITICAL: user.id is MISSING in checkMyRoles!');
+            console.error('   user object:', user);
+            return;
+        }
+
         try {
             const res = await fetch(`http://localhost:3005/api/roles/lista?viajeId=${user.viajeId}`);
             const data = await res.json();
             const me = data.usuarios.find((u: any) => u.id === user.id);
             if (me && (me.es_admin !== user.esAdmin || me.es_tesorero !== user.esTesorero)) {
                 const updatedUser = { ...user, esAdmin: me.es_admin, esTesorero: me.es_tesorero };
+                console.log('🔄 Updating user roles:', {
+                    userId: user.id,
+                    userName: user.nombre,
+                    oldAdmin: user.esAdmin,
+                    newAdmin: me.es_admin
+                });
                 setUser(updatedUser);
                 localStorage.setItem('travelSphereUser', JSON.stringify(updatedUser));
             }
@@ -272,6 +323,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
             if (data.success) {
                 const newUser = { id: data.userId, nombre: lobbyForm.nombre, esAdmin: 1, esTesorero: 1, viajeId: data.viajeId, viajeCodigo: data.codigo, destino: destinoFinal };
                 setUser(newUser);
+                setTripCode(data.codigo); // 🔥 Activar Realtime sync
                 setView('dashboard');
                 if (!isVoting) fetchCityCoords(lobbyForm.destino);
             }
@@ -286,6 +338,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
             if (data.success) {
                 const newUser = { id: data.userId, nombre: lobbyForm.nombre, esAdmin: 0, esTesorero: 0, viajeId: data.viajeId, viajeCodigo: lobbyForm.codigo, destino: data.destino };
                 setUser(newUser);
+                setTripCode(lobbyForm.codigo); // 🔥 Activar Realtime sync
                 if (data.fechas?.inicio) setFechasOficiales(data.fechas);
                 setView('dashboard');
                 if (!data.destino.startsWith("PENDIENTE")) fetchCityCoords(data.destino);
@@ -305,14 +358,28 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                 setVotingStartDate(viajeData.voting_start_date);
             }
 
-            if (viajeData.is_voting_open) {
-                setIsVotingOpen(true);
-            } else {
-                setIsVotingOpen(false);
-            }
+            // ✅ VALIDACIÓN DEFENSIVA: Solo abrir votación si la fecha se alcanzó
+            const now = new Date();
+            const votingDate = viajeData.voting_start_date ? new Date(viajeData.voting_start_date) : null;
+            const shouldBeOpen = viajeData.is_voting_open && (!votingDate || now >= votingDate);
+            setIsVotingOpen(shouldBeOpen);
 
             if (viajeData.destino && viajeData.destino !== user.destino) {
+                // 🔥 CRITICAL: Never overwrite user object if ID is missing
+                if (!user.id) {
+                    console.error('❌ CRITICAL BUG: user.id is missing! Refusing to update user object.');
+                    console.error('   Current user object:', user);
+                    console.error('   This would corrupt localStorage. Skipping update.');
+                    return;
+                }
+
                 const updatedUser = { ...user, destino: viajeData.destino };
+                console.log('🔄 Updating user destino:', {
+                    oldDestino: user.destino,
+                    newDestino: viajeData.destino,
+                    userId: user.id,
+                    userName: user.nombre
+                });
                 setUser(updatedUser);
                 localStorage.setItem('travelSphereUser', JSON.stringify(updatedUser));
 
@@ -589,7 +656,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     // 1. LOBBY
     if (view === 'lobby') {
-        return (<div className="fixed inset-0 z-[5000] bg-[#F8F5F2] flex items-center justify-center p-6"><div className="w-full max-w-md bg-white p-12 rounded-[2rem] shadow-xl animate-enter relative overflow-hidden border border-[#E7E5E4]"><div className="absolute top-0 left-0 w-full h-2 bg-[#1B4332]"></div><div className="flex justify-center mb-6"><div className="bg-[#E8F5E9] p-4 rounded-full"><Compass size={40} className="text-[#1B4332]" strokeWidth={1.5} /></div></div><h1 className="text-3xl serif-font text-center text-[#1B4332] mb-2">{lobbyMode === 'start' ? 'TravelSphere' : lobbyMode === 'create_choice' ? 'Diseña tu Viaje' : lobbyMode === 'create_voting' ? 'Misión Democrática' : 'Comenzar Aventura'}</h1><p className="text-center text-[#78716C] mb-8 text-sm tracking-wide">{lobbyMode === 'start' ? 'El arte de viajar en compañía.' : lobbyMode === 'create_choice' ? '¿Tenéis claro el rumbo?' : lobbyMode === 'create_voting' ? 'El grupo decidirá el destino.' : 'Configura los detalles finales.'}</p>{lobbyMode === 'start' && (<div className="space-y-4"><button onClick={() => setLobbyMode('create_choice')} className="w-full py-5 btn-primary text-lg flex items-center justify-center gap-3 shadow-lg shadow-[#1B4332]/10"><Plus size={20} /> Crear Experiencia</button><button onClick={() => setLobbyMode('join')} className="w-full py-5 btn-secondary text-lg font-medium flex items-center justify-center gap-3"><LogIn size={20} /> Unirse al Grupo</button></div>)}{lobbyMode === 'create_choice' && (<div className="space-y-4 animate-enter"><button onClick={() => setLobbyMode('create_fixed')} className="w-full p-6 bg-[#F8F5F2] border border-[#E7E5E4] rounded-2xl hover:border-[#1B4332] hover:bg-[#E8F5E9] transition-all group text-left flex items-center gap-4"><div className="bg-white p-3 rounded-full text-[#1B4332] group-hover:scale-110 transition-transform"><MapPin size={24} /></div><div><h3 className="font-bold text-[#1B4332] text-lg">Destino Definido</h3><p className="text-xs text-[#78716C]">Ya sabemos a dónde vamos.</p></div></button><button onClick={() => setLobbyMode('create_voting')} className="w-full p-6 bg-[#F8F5F2] border border-[#E7E5E4] rounded-2xl hover:border-[#1B4332] hover:bg-[#E8F5E9] transition-all group text-left flex items-center gap-4"><div className="bg-white p-3 rounded-full text-[#1B4332] group-hover:scale-110 transition-transform"><Vote size={24} /></div><div><h3 className="font-bold text-[#1B4332] text-lg">Someter a Votación</h3><p className="text-xs text-[#78716C]">Decidiremos el destino juntos.</p></div></button><button onClick={() => setLobbyMode('start')} className="w-full py-3 text-sm text-[#78716C] hover:text-[#1B4332] flex items-center justify-center gap-2 mt-4"><ArrowRight className="rotate-180" size={16} /> Volver</button></div>)}{(lobbyMode === 'create_fixed' || lobbyMode === 'create_voting' || lobbyMode === 'join') && (<div className="space-y-6 animate-enter"><div><label className="text-[10px] font-bold text-[#78716C] uppercase ml-1 tracking-widest">{lobbyMode === 'create_fixed' ? 'Destino' : lobbyMode === 'join' ? 'Código de Acceso' : 'Nombre del Grupo'}</label><input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332] transition-all placeholder:text-[#D6D3D1]" placeholder={lobbyMode === 'create_fixed' ? "Ej: París" : lobbyMode === 'join' ? "ABCD" : "Ej: Verano 2026"} maxLength={lobbyMode === 'join' ? 4 : 50} value={lobbyMode === 'join' ? lobbyForm.codigo : lobbyForm.destino} onChange={e => lobbyMode === 'join' ? setLobbyForm({ ...lobbyForm, codigo: e.target.value.toUpperCase() }) : setLobbyForm({ ...lobbyForm, destino: e.target.value })} /></div><div><label className="text-[10px] font-bold text-[#78716C] uppercase ml-1 tracking-widest">Tu Nombre</label><input type="text" className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332] transition-all placeholder:text-[#D6D3D1]" placeholder="Ej: Ana" value={lobbyForm.nombre} onChange={e => setLobbyForm({ ...lobbyForm, nombre: e.target.value })} /></div>{lobbyError && <p className="text-[#9B2226] text-xs font-medium text-center bg-[#FEF2F2] py-2 rounded-lg">{lobbyError}</p>}<div className="flex gap-4 pt-4"><button onClick={() => { setLobbyMode('start'); setLobbyError('') }} className="p-4 rounded-full bg-[#F8F5F2] text-[#78716C] hover:bg-gray-200 transition-colors"><ArrowRight size={24} className="rotate-180" /></button><button onClick={() => lobbyMode === 'join' ? handleJoinTrip() : handleCreateTrip(lobbyMode === 'create_voting')} className="flex-1 py-4 btn-primary text-lg shadow-xl shadow-[#1B4332]/20">{lobbyMode === 'create_voting' ? 'Abrir Votación' : lobbyMode === 'create_fixed' ? 'Comenzar' : 'Entrar'}</button></div></div>)}</div></div>);
+        return (<div className="fixed inset-0 z-[5000] bg-[#F8F5F2] flex items-center justify-center p-6"><div className="w-full max-w-md bg-white p-12 rounded-[2rem] shadow-xl animate-enter relative overflow-hidden border border-[#E7E5E4]"><div className="absolute top-0 left-0 w-full h-2 bg-[#1B4332]"></div><div className="flex justify-center mb-6"><div className="bg-[#E8F5E9] p-4 rounded-full"><Compass size={40} className="text-[#1B4332]" strokeWidth={1.5} /></div></div><h1 className="text-3xl serif-font text-center text-[#1B4332] mb-2">{lobbyMode === 'start' ? 'TravelSphere' : lobbyMode === 'create_choice' ? 'Diseña tu Viaje' : lobbyMode === 'create_voting' ? 'Misión Democrática' : 'Comenzar Aventura'}</h1><p className="text-center text-[#78716C] mb-8 text-sm tracking-wide">{lobbyMode === 'start' ? 'El arte de viajar en compañía.' : lobbyMode === 'create_choice' ? '¿Tenéis claro el rumbo?' : lobbyMode === 'create_voting' ? 'El grupo decidirá el destino.' : 'Configura los detalles finales.'}</p>{lobbyMode === 'start' && (<div className="space-y-4"><button onClick={() => setLobbyMode('create_choice')} className="w-full py-5 btn-primary text-lg flex items-center justify-center gap-3 shadow-lg shadow-[#1B4332]/10"><Plus size={20} /> Crear Experiencia</button><button onClick={() => setLobbyMode('join')} className="w-full py-5 btn-secondary text-lg font-medium flex items-center justify-center gap-3"><LogIn size={20} /> Unirse al Grupo</button></div>)}{lobbyMode === 'create_choice' && (<div className="space-y-4 animate-enter"><button onClick={() => setLobbyMode('create_fixed')} className="w-full p-6 bg-[#F8F5F2] border border-[#E7E5E4] rounded-2xl hover:border-[#1B4332] hover:bg-[#E8F5E9] transition-all group text-left flex items-center gap-4"><div className="bg-white p-3 rounded-full text-[#1B4332] group-hover:scale-110 transition-transform"><MapPin size={24} /></div><div><h3 className="font-bold text-[#1B4332] text-lg">Destino Definido</h3><p className="text-xs text-[#78716C]">Ya sabemos a dónde vamos.</p></div></button><button onClick={() => setLobbyMode('create_voting')} className="w-full p-6 bg-[#F8F5F2] border border-[#E7E5E4] rounded-2xl hover:border-[#1B4332] hover:bg-[#E8F5E9] transition-all group text-left flex items-center gap-4"><div className="bg-white p-3 rounded-full text-[#1B4332] group-hover:scale-110 transition-transform"><Vote size={24} /></div><div><h3 className="font-bold text-[#1B4332] text-lg">Someter a Votación</h3><p className="text-xs text-[#78716C]">Decidiremos el destino juntos.</p></div></button><button onClick={() => setLobbyMode('start')} className="w-full py-3 text-sm text-[#78716C] hover:text-[#1B4332] flex items-center justify-center gap-2 mt-4"><ArrowRight className="rotate-180" size={16} /> Volver</button></div>)}{(lobbyMode === 'create_fixed' || lobbyMode === 'create_voting' || lobbyMode === 'join') && (<div className="space-y-6 animate-enter"><div><label className="text-[10px] font-bold text-[#78716C] uppercase ml-1 tracking-widest">{lobbyMode === 'create_fixed' ? 'Destino' : lobbyMode === 'join' ? 'Código de Acceso' : 'Nombre del Grupo'}</label><input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332] transition-all placeholder:text-[#D6D3D1]" placeholder={lobbyMode === 'create_fixed' ? "Ej: París" : lobbyMode === 'join' ? "ABC123" : "Ej: Verano 2026"} maxLength={lobbyMode === 'join' ? 6 : 50} value={lobbyMode === 'join' ? lobbyForm.codigo : lobbyForm.destino} onChange={e => lobbyMode === 'join' ? setLobbyForm({ ...lobbyForm, codigo: e.target.value.toUpperCase() }) : setLobbyForm({ ...lobbyForm, destino: e.target.value })} /></div><div><label className="text-[10px] font-bold text-[#78716C] uppercase ml-1 tracking-widest">Tu Nombre</label><input type="text" className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332] transition-all placeholder:text-[#D6D3D1]" placeholder="Ej: Ana" value={lobbyForm.nombre} onChange={e => setLobbyForm({ ...lobbyForm, nombre: e.target.value })} /></div>{lobbyError && <p className="text-[#9B2226] text-xs font-medium text-center bg-[#FEF2F2] py-2 rounded-lg">{lobbyError}</p>}<div className="flex gap-4 pt-4"><button onClick={() => { setLobbyMode('start'); setLobbyError('') }} className="p-4 rounded-full bg-[#F8F5F2] text-[#78716C] hover:bg-gray-200 transition-colors"><ArrowRight size={24} className="rotate-180" /></button><button onClick={() => lobbyMode === 'join' ? handleJoinTrip() : handleCreateTrip(lobbyMode === 'create_voting')} className="flex-1 py-4 btn-primary text-lg shadow-xl shadow-[#1B4332]/20">{lobbyMode === 'create_voting' ? 'Abrir Votación' : lobbyMode === 'create_fixed' ? 'Comenzar' : 'Entrar'}</button></div></div>)}</div></div>);
     }
 
     // 2. VOTING ROOM (CONECTADO Y ROBUSTO)
@@ -609,6 +676,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                             viajeId={user.viajeId}
                             onAllVoted={() => setAllUsersVoted(true)}
                             onBack={() => setView('dashboard')}
+                            onResetVote={handleResetVote}
                             user={user}
                         />
                     );
@@ -713,7 +781,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                         <div className="animate-in slide-in-from-bottom-4">
                             <div className="mb-8">
                                 <VotingCountdown
-                                    votingDate={votingStartDate?.toISOString() || ''}
+                                    votingDate={votingStartDate ? (votingStartDate instanceof Date ? votingStartDate.toISOString() : votingStartDate) : ''}
                                     isAdmin={false}
                                     candidatesCount={candidaturas.length}
                                     onStartVoting={() => {
@@ -809,22 +877,9 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                                     })
                                 });
 
-                                setVotingStartDate(new Date(newDate)); // newDate is ISO string
+                                setVotingStartDate(new Date(newDate));
                                 setShowDatePicker(false);
-
-                                // Save voting state to database when date is confirmed
-                                if (newDate) { // Use newDate as it's the confirmed one
-                                    setIsVotingOpen(true);
-
-                                    // Save to database
-                                    await updateVotingState({
-                                        voting_start_date: newDate, // Already ISO string
-                                        voting_phase: 'VOTING',
-                                        total_cities_initial: candidaturas.length
-                                    });
-
-                                    setModalAction(null); // Assuming this closes the modal or related action
-                                }
+                                setModalAction(null);
                             }}
                             className="w-full py-4 bg-[#1B4332] text-white rounded-xl font-bold uppercase tracking-widest hover:bg-[#2D6A4F] shadow-lg transition-transform active:scale-95"
                         >
@@ -832,10 +887,10 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                         </button>
                         <button onClick={() => setShowDatePicker(false)} className="w-full py-2 text-[#A8A29E] hover:text-[#1B4332] text-xs font-bold uppercase tracking-widest">Cancelar</button>
                     </div>
-                </Modal>
+                </Modal >
 
                 {/* --- MODAL COORDINADO (Paso 3) --- */}
-                <ProposalModal
+                < ProposalModal
                     isOpen={modalAction?.type === 'proponer'}
                     onClose={async () => {
                         setModalAction(null);      // 1. Cerramos (El Polling despierta)
@@ -847,8 +902,8 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                     }}
                 />
 
-                <CustomAlert {...alertConfig} />
-            </div>
+                < CustomAlert {...alertConfig} />
+            </div >
         );
     }
 

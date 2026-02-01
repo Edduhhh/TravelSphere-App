@@ -1,0 +1,33 @@
+
+// --- CALCULAR ELIMINACIONES (SERVER-SIDE, UNA SOLA VERDAD) ---
+app.post('/api/voting/calcular-eliminaciones', (req, res) => {
+    const { viajeId } = req.body;
+    console.log(`\n🔥 [ELMINAR] Calculando para viaje: ${viajeId}`);
+    
+    try {
+        const cands = db.prepare(`
+            SELECT id, ciudad, puntos, votos_pos1
+            FROM candidat uras
+            WHERE viaje_id = ? AND (eliminada IS NULL OR eliminada = 0)
+            ORDER BY puntos DESC, votos_pos1 DESC, id ASC
+        `).all(viajeId);
+        
+        const total = cands.length;
+        let toElim = total > 8 ? Math.min(3, total - 8) : (total > 3 ? 1 : 0);
+        
+        if (toElim === 0) {
+            return res.json({ success: true, phase: 'FINAL', winner: cands[0], eliminated: [] });
+        }
+        
+        const elims = cands.slice(0, toElim);
+        console.log(`   Eliminando: ${elims.map(c => c.ciudad).join(', ')}`);
+        
+        db.transaction(() => {
+            elims.forEach(c => db.prepare('UPDATE candidaturas SET eliminada = 1 WHERE id = ?').run(c.id));
+        })();
+        
+        res.json({ success: true, phase: total > 8 ? 'BARRIDO' : 'SUPER', eliminated: elims, remaining: total - toElim });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});

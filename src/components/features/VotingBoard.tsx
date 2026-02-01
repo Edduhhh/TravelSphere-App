@@ -130,6 +130,12 @@ export const VotingBoard: React.FC<VotingBoardProps> = ({ candidaturas, user, on
             // Usamos el endpoint del backend que ya existe y funciona
             const rankingIds = cities.map(city => city.id);
 
+            console.log('💾 Enviando voto:', {
+                viajeId: user.viajeId,
+                usuarioId: user.id,
+                rankingIds: rankingIds
+            });
+
             const response = await fetch('http://localhost:3005/api/voting/enviar-ranking', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -141,16 +147,26 @@ export const VotingBoard: React.FC<VotingBoardProps> = ({ candidaturas, user, on
             });
 
             const data = await response.json();
+            console.log('📥 Respuesta del servidor:', data);
 
             if (!response.ok || !data.success) {
+                // Show detailed error
+                console.error('❌ Error completo:', {
+                    status: response.status,
+                    statusText: response.statusText,
+                    data: data
+                });
+
+                alert(`Error al guardar voto:\n\n${data.error || 'Error desconocido'}\n\nStatus: ${response.status}\nDetalles: ${JSON.stringify(data, null, 2)}`);
                 throw new Error(data.error || 'Error al guardar');
             }
 
+            console.log('✅ Voto guardado exitosamente');
             onVoteSaved();
 
         } catch (error) {
-            console.error("Error:", error);
-            alert("Error al guardar.");
+            console.error("❌ Error en handleSaveRanking:", error);
+            // Error already shown in alert above
         } finally {
             setSaving(false);
         }

@@ -1,41 +1,60 @@
 import React, { useState, useEffect } from 'react';
 import { Trophy, Skull, ArrowRight, Activity } from 'lucide-react';
-import { calculateSurvivalResults, Vote } from '../../utils/votingAlgorithm';
 
-// 1. AQUÍ ESTABA EL ERROR: Añadimos 'phase' a la definición para que Typescript no se queje
 interface EliminationScreenProps {
     candidaturas: any[];
     onVote: (eliminatedIds: string[]) => void;
-    phase: string; // <--- ESTO FALTABA
+    phase: string;
+    viajeId: number;
 }
 
-export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidaturas, onVote, phase }) => {
-    const [step, setStep] = useState<'calculating' | 'eliminating' | 'result'>('calculating');
-    const [eliminatedIds, setEliminatedIds] = useState<string[]>([]);
+export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidaturas, onVote, phase, viajeId }) => {
+    const [step, setStep] = useState<'calculating' | 'result'>('calculating');
+    const [eliminatedCities, setEliminatedCities] = useState<any[]>([]);
     const [survivors, setSurvivors] = useState<any[]>([]);
 
     useEffect(() => {
-        // Simulamos un pequeño "pensamiento" de la IA para dar emoción
-        const timer = setTimeout(() => {
-            runCalculation();
-        }, 1500);
-        return () => clearTimeout(timer);
-    }, [candidaturas]);
+        fetchEliminationResults();
+    }, [candidaturas, viajeId]);
 
-    const runCalculation = () => {
-        // Preparamos los datos para el algoritmo
-        // Como estamos en la pantalla de resultados, asumimos que el orden actual es el resultado de los votos
-        const currentVote: Vote = {
-            userId: 'system',
-            rankedCityIds: candidaturas.map(c => c.id)
-        };
+    const fetchEliminationResults = async () => {
+        try {
+            console.log('🔥 Llamando al servidor para calcular eliminaciones...');
 
-        // Calculamos quién cae
-        const resultIds = calculateSurvivalResults([currentVote], candidaturas.map(c => c.id));
+            const response = await fetch('http://localhost:3005/api/voting/calcular-eliminaciones', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ viajeId })
+            });
 
-        setEliminatedIds(resultIds);
-        setSurvivors(candidaturas.filter(c => !resultIds.includes(c.id)));
-        setStep('result');
+            const data = await response.json();
+            console.log('📥 Respuesta del servidor:', data);
+
+            if (data.success) {
+                if (data.phase === 'FINAL') {
+                    console.log('🏆 FASE FINAL - Ganador:', data.winner);
+                    // Handle winner case if needed
+                } else {
+                    // Get eliminated cities data
+                    const eliminatedIds = data.eliminated.map((e: any) => e.id);
+
+                    // Find full city data from candidaturas
+                    const eliminatedFull = candidaturas.filter(c => eliminatedIds.includes(c.id));
+                    const survivorsFull = candidaturas.filter(c => !eliminatedIds.includes(c.id));
+
+                    console.log(`❌ Eliminadas: ${eliminatedFull.map(c => c.ciudad).join(', ')}`);
+                    console.log(`✅ Sobreviven: ${survivorsFull.length} ciudades`);
+
+                    setEliminatedCities(eliminatedFull);
+                    setSurvivors(survivorsFull);
+                }
+
+                setStep('result');
+            }
+        } catch (error) {
+            console.error('❌ Error al obtener eliminaciones:', error);
+            setStep('result');
+        }
     };
 
     if (step === 'calculating') {
@@ -48,7 +67,7 @@ export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidatur
                     Recalculando Supervivencia
                 </h2>
                 <p className="text-[#78716C] max-w-xs mx-auto">
-                    La IA está analizando los votos y decidiendo quién abandona el viaje...
+                    El servidor está procesando los votos y decidiendo quién abandona el viaje...
                 </p>
             </div>
         );
@@ -62,7 +81,7 @@ export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidatur
                     <Skull size={32} className="text-red-600" />
                 </div>
                 <h2 className="text-3xl font-black text-[#1C1917] uppercase tracking-tighter">
-                    {eliminatedIds.length > 1 ? 'Ciudades Caídas' : 'Ciudad Eliminada'}
+                    {eliminatedCities.length > 1 ? 'Ciudades Caídas' : 'Ciudad Eliminada'}
                 </h2>
                 <p className="text-red-500 font-medium mt-2">
                     Han sido expulsadas de la competición
@@ -71,7 +90,7 @@ export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidatur
 
             {/* LISTA DE ELIMINADOS */}
             <div className="space-y-4 mb-8">
-                {candidaturas.filter(c => eliminatedIds.includes(c.id)).map((city) => (
+                {eliminatedCities.map((city) => (
                     <div key={city.id} className="bg-red-50 border-2 border-red-100 p-6 rounded-2xl flex items-center justify-between shadow-sm transform hover:scale-105 transition-transform">
                         <span className="text-2xl font-black text-red-900 line-through decoration-4 decoration-red-500/50">
                             {city.ciudad}
@@ -93,7 +112,7 @@ export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidatur
                 </div>
 
                 <button
-                    onClick={() => onVote(eliminatedIds)}
+                    onClick={() => onVote(eliminatedCities.map(c => c.id))}
                     className="w-full py-5 bg-[#1B4332] text-white rounded-xl font-bold text-lg shadow-2xl flex items-center justify-center gap-3 hover:bg-[#2D6A4F] active:scale-95 transition-all"
                 >
                     CONTINUAR <ArrowRight />

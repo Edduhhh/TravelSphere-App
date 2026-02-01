@@ -1,20 +1,22 @@
-import { Users, Clock, ArrowLeft } from 'lucide-react';
+import { Users, Clock, ArrowLeft, AlertTriangle, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 interface VotingWaitingScreenProps {
     viajeId: number;
     onAllVoted: () => void;
     onBack?: () => void;
-    user?: { id: number; nombre: string; rol: string }; // <--- AÑADIDO
+    onResetVote?: () => void; // <--- NUEVO: Para desbloquear
+    user?: { id: number; nombre: string; rol: string };
 }
 
-export const VotingWaitingScreen: React.FC<VotingWaitingScreenProps> = ({ viajeId, onAllVoted, onBack, user }) => {
+export const VotingWaitingScreen: React.FC<VotingWaitingScreenProps> = ({ viajeId, onAllVoted, onBack, onResetVote, user }) => {
     const [progress, setProgress] = useState({
         totalUsers: 0,
         votedUsers: 0,
         pendingUsers: [] as string[],
         allVoted: false
     });
+    const [showForceExit, setShowForceExit] = useState(false);
 
     useEffect(() => {
         const checkProgress = async () => {
@@ -40,8 +42,25 @@ export const VotingWaitingScreen: React.FC<VotingWaitingScreenProps> = ({ viajeI
         ? (progress.votedUsers / progress.totalUsers) * 100
         : 0;
 
+    const handleForceExit = () => {
+        if (onBack) {
+            onBack();
+        } else {
+            window.location.reload();
+        }
+    };
+
     return (
         <div className="fixed inset-0 z-[200] bg-[#F8F5F2] flex flex-col items-center justify-center p-6">
+            {/* Botón de Escape de Emergencia - Siempre visible */}
+            <button
+                onClick={() => setShowForceExit(!showForceExit)}
+                className="absolute top-6 right-6 p-2 bg-red-500 hover:bg-red-600 rounded-full shadow-lg transition-all z-10"
+                title="Salir de esta pantalla"
+            >
+                <X size={20} className="text-white" />
+            </button>
+
             {/* Botón de Volver */}
             {onBack && (
                 <button
@@ -115,6 +134,59 @@ export const VotingWaitingScreen: React.FC<VotingWaitingScreenProps> = ({ viajeI
                     <div className="w-2 h-2 bg-[#1B4332] rounded-full animate-pulse" />
                     <span className="text-xs font-medium">Actualizando en tiempo real...</span>
                 </div>
+
+                {/* Panel de Salida Forzada */}
+                {showForceExit && (
+                    <div className="mb-4 p-4 bg-red-50 border-2 border-red-300 rounded-xl animate-in slide-in-from-top">
+                        <div className="flex items-center gap-2 mb-3">
+                            <AlertTriangle size={20} className="text-red-600" />
+                            <p className="text-sm font-bold text-red-800">Salida de Emergencia</p>
+                        </div>
+                        <p className="text-xs text-red-700 mb-3 leading-relaxed">
+                            ¿Estás seguro de que quieres salir? Esto te permitirá volver al dashboard.
+                        </p>
+                        <button
+                            onClick={handleForceExit}
+                            className="w-full bg-red-600 hover:bg-red-700 text-white py-3 rounded-lg text-sm font-bold uppercase tracking-wider transition-colors shadow-md"
+                        >
+                            SÍ, SALIR AHORA
+                        </button>
+                    </div>
+                )}
+
+                {/* ⚠️ ALERTA DE USUARIO PENDIENTE (SOLUCIÓN EMERGENCY) */}
+                {(() => {
+                    const cleanName = (n: string) => n?.toLowerCase().trim();
+                    const isPending = user && progress.pendingUsers.some(p => cleanName(p) === cleanName(user.nombre));
+
+                    // Debugging visible para el usuario si es necesario (o por consola)
+                    if (user && progress.pendingUsers.length > 0) {
+                        console.log('🔍 [DEBUG WAIT] Me:', user.nombre, '| Pending:', progress.pendingUsers, '| Match:', isPending, '| HasResetFn:', !!onResetVote);
+                    }
+
+                    if (isPending && onResetVote) {
+                        return (
+                            <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-xl flex flex-col gap-3 shadow-lg animate-in slide-in-from-bottom">
+                                <div className="flex items-start gap-3 text-left">
+                                    <div className="bg-yellow-100 p-2 rounded-full text-yellow-700">
+                                        <Users size={16} />
+                                    </div>
+                                    <div>
+                                        <p className="text-sm font-bold text-yellow-800">¿Eres tú, {user?.nombre}?</p>
+                                        <p className="text-xs text-yellow-700 mt-1">El sistema espera tu voto, pero tú estás aquí.</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={onResetVote}
+                                    className="w-full bg-yellow-600 text-white py-3 rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-yellow-700 transition-colors shadow-sm"
+                                >
+                                    CORREGIR Y VOTAR
+                                </button>
+                            </div>
+                        );
+                    }
+                    return null;
+                })()}
 
                 {/* Botón de Override Manual (SOLO PARA ADMIN) */}
                 {user?.rol === 'admin' && (
