@@ -102,7 +102,34 @@ export const VotingBoard: React.FC<VotingBoardProps> = ({ candidaturas, user, on
     const isNegativeVoting = rules.votingType === 'NEGATIVE';
 
     useEffect(() => {
-        setCities(candidaturas);
+        setCities(currentCities => {
+            // 1. Identificar las ciudades que ya tenemos (para mantener u orden)
+            const currentIds = new Set(currentCities.map(c => c.id));
+            const newServerIds = new Set(candidaturas.map(c => c.id));
+
+            // 2. ¿Hay algo nuevo?
+            const addedCities = candidaturas.filter(c => !currentIds.has(c.id));
+
+            // 3. ¿Algo se ha borrado?
+            const deletedIds = [...currentIds].filter(id => !newServerIds.has(id));
+
+            // Si no hay cambios reales (solo orden), NO TOCAMOS NADA
+            if (addedCities.length === 0 && deletedIds.length === 0) {
+                return currentCities;
+            }
+
+            console.log('🔄 Sincronizando orden visual:', { added: addedCities.length, deleted: deletedIds.length });
+
+            // 4. Si hay cambios, reconstruimos preservando el orden local
+            const keptCities = currentCities.filter(c => newServerIds.has(c.id));
+
+            // Si es la primera carga (keptCities vacío), barajamos. Si ya había, añadimos al final.
+            if (keptCities.length === 0) {
+                return shuffleArray(candidaturas);
+            }
+
+            return [...keptCities, ...addedCities];
+        });
     }, [candidaturas]);
 
     const sensors = useSensors(

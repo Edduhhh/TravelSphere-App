@@ -145,24 +145,92 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     const [inputValue, setInputValue] = useState('');
     const [inputValue2, setInputValue2] = useState('');
 
+    // 🔥 SYNC STATE: Resultados de eliminación para invitados (antes de borrar)
+    const [guestEliminationResults, setGuestEliminationResults] = useState<{ eliminatedIds: string[], survivorsCount: number } | null>(null);
+
     // Trip code for Realtime sync
     const [tripCode, setTripCode] = useState<string | null>(null);
 
     // 🔥 REALTIME SYNC - Sincronización instantánea con Supabase
-    useVotingRealtimeSync(tripCode, (data) => {
-        console.log('🔥 [REALTIME CALLBACK] Actualizando estado local:', data);
+    useVotingRealtimeSync(tripCode, (event) => {
+        console.log('🔥 [REALTIME DISPATCHER] Evento recibido:', event);
 
-        if (data.voting_start_date) {
-            const newDate = new Date(data.voting_start_date);
-            setVotingStartDate(newDate);
-            console.log('   ✅ Fecha actualizada:', newDate);
+        if (event.type === 'trip_update') {
+            const data = event.data;
+            if (data.voting_start_date) {
+                const newDate = new Date(data.voting_start_date);
+                setVotingStartDate(newDate);
+                console.log('   ✅ Fecha actualizada:', newDate);
+            }
+            if (data.is_voting_open !== undefined) {
+                setIsVotingOpen(data.is_voting_open);
+                console.log('   ✅ Votación abierta:', data.is_voting_open);
+            }
+            // 🔥 CRITICAL FIX: Reset elimination screen for guests when round restarts
+            if (data.action === 'new_round') {
+                console.log('   🔄 Rounds reset! Clearing elimination screen for guests.');
+                setGuestEliminationResults(null);
+                setAllUsersVoted(false);
+                setHasVoted(false);
+                refreshCandidates(); // 🔥 FIX: Fetch fresh list (10 cities) immediately
+            }
         }
 
-        if (data.is_voting_open !== undefined) {
-            setIsVotingOpen(data.is_voting_open);
-            console.log('   ✅ Votación abierta:', data.is_voting_open);
+        if (event.type === 'candidates_changed') {
+            console.log('   ✅ Cambio en candidatos detectado! Refrescando...', event.data);
+            refreshCandidates();
+        }
+
+        // 🔥 SYNC: Mostrar pantalla de eliminación a invitados CUANDO EL ADMIN ABRE SU PANTALLA
+        if (event.type === 'elimination_reveal') {
+            console.log('💀 [SYNC] Revelación de eliminación recibida:', event.data);
+            setGuestEliminationResults(event.data); // { eliminatedIds: [], survivorsCount: N }
         }
     });
+
+    // 🔥 LOCAL SYNC BRIDGE (SSE) - Respaldo para cuando Supabase no conecta con local
+    useEffect(() => {
+        const evtSource = new EventSource('http://localhost:3005/api/events');
+
+        evtSource.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            console.log('🔌 [SSE] Evento recibido:', data);
+
+            if (data.type === 'connected') {
+                console.log('   ✅ Conectado al puente local');
+            }
+
+            if (data.type === 'candidates_changed') {
+                console.log('   ✅ [SSE] Cambio candidatos -> Refrescando');
+                refreshCandidates();
+            }
+
+            if (data.type === 'elimination_reveal') {
+                console.log('💀 [SSE] REVEAL ->', data.data);
+                setGuestEliminationResults(data.data);
+            }
+
+            if (data.type === 'trip_update') {
+                // Sincronizar estado si viene por aquí
+                const update = data.data;
+                if (update.voting_phase) {
+                    // Force refresh state
+                    syncVotingState();
+                }
+            }
+        };
+
+        evtSource.onerror = (err) => {
+            console.error('🔌 [SSE] Error conexión', err);
+            evtSource.close();
+            // Reintentar en 5s? El navegador suele reintentar solo
+        };
+
+        return () => {
+            evtSource.close();
+        };
+    }, []);
+
 
     const sensors = useSensors(
         useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -171,12 +239,15 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     );
 
     // --- EFECTOS (Hooks) ---
+    // --- EFECTOS (Hooks) ---
     useEffect(() => {
-        const savedUser = localStorage.getItem('travelSphereUser');
+        // 🔥 CAMBIO CRÍTICO: Usamos sessionStorage en lugar de localStorage
+        // Estó permite abrir múltiples pestañas/ventanas con usuarios distintos en el mismo navegador
+        const savedUser = sessionStorage.getItem('travelSphereUser');
         if (savedUser) {
             const parsed = JSON.parse(savedUser);
             setUser(parsed);
-            setTripCode(parsed.viajeCodigo); // 🔥 Activar Realtime sync con código guardado
+            setTripCode(parsed.viajeCodigo);
             setView('dashboard');
             if (parsed.destino && !parsed.destino.startsWith("PENDIENTE")) {
                 fetchCityCoords(parsed.destino);
@@ -185,7 +256,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     }, []);
 
     useEffect(() => {
-        if (user) localStorage.setItem('travelSphereUser', JSON.stringify(user));
+        if (user) sessionStorage.setItem('travelSphereUser', JSON.stringify(user));
     }, [user]);
 
     // --- EL LATIDO DEL SISTEMA (HEARTBEAT) ---
@@ -205,11 +276,10 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
             if (!isMounted) return;
 
             try {
-                // Solo refrescar candidatos y roles si NO estamos votando activamente
-                if (view !== 'voting_room') {
-                    await refreshCandidates();
-                    await checkMyRoles();
-                }
+                // Siempre refrescar candidatos y roles para asegurar consistencia
+                // SIEMPRE refrescar, incluso en voting_room, para cazar ciudades nuevas
+                await refreshCandidates();
+                await checkMyRoles();
             } catch (error) {
                 console.error("Polling error", error);
             }
@@ -218,14 +288,15 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         // Ejecutar inmediatamente
         poll();
 
-        // Intervalo de 5 segundos (menos agresivo, solo para candidatos)
-        const intervalId = setInterval(poll, 5000);
+        // Intervalo adaptable: 2s durante votación (crítico), 5s en otros casos
+        const intervalTime = isVotingOpen ? 2000 : 5000;
+        const intervalId = setInterval(poll, intervalTime);
 
         return () => {
             isMounted = false;
             clearInterval(intervalId);
         };
-    }, [user, view]);
+    }, [user, view, isVotingOpen]);
 
     // --- FUNCIONES AUXILIARES ---
     const showAlert = (message: string) => setAlertConfig({ type: 'alert', message, onConfirm: () => setAlertConfig(null) });
@@ -336,7 +407,16 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
             const res = await fetch('http://localhost:3005/api/lobby/unirse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nombre: lobbyForm.nombre, codigo: lobbyForm.codigo }) });
             const data = await res.json();
             if (data.success) {
-                const newUser = { id: data.userId, nombre: lobbyForm.nombre, esAdmin: 0, esTesorero: 0, viajeId: data.viajeId, viajeCodigo: lobbyForm.codigo, destino: data.destino };
+                const newUser = {
+                    id: data.userId,
+                    nombre: lobbyForm.nombre,
+                    esAdmin: data.esAdmin || 0,
+                    esTesorero: data.esTesorero || 0,
+                    viajeId: data.viajeId,
+                    viajeCodigo: lobbyForm.codigo,
+                    destino: data.destino
+                };
+                console.log('🔑 User joined with roles:', newUser);
                 setUser(newUser);
                 setTripCode(lobbyForm.codigo); // 🔥 Activar Realtime sync
                 if (data.fechas?.inicio) setFechasOficiales(data.fechas);
@@ -356,6 +436,8 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
             if (viajeData.voting_start_date) {
                 setVotingStartDate(viajeData.voting_start_date);
+            } else {
+                setVotingStartDate(null);
             }
 
             // ✅ VALIDACIÓN DEFENSIVA: Solo abrir votación si la fecha se alcanzó
@@ -394,7 +476,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         }
 
         // 2. OBTENER CANDIDATURAS
-        const res = await fetch(`http://localhost:3005/api/voting/candidaturas?viajeId=${user.viajeId}&usuarioId=${user.id}`);
+        const res = await fetch(`http://localhost:3005/api/voting/candidaturas?viajeId=${user.viajeId}&usuarioId=${user.id}&_t=${Date.now()}`);
         const data = await res.json();
 
         const serverCands = data.candidaturas || [];
@@ -408,13 +490,11 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         }
 
         if (!data.yaVoto) {
-            setMyRanking(current => {
-                if (current.length === 0) return serverCands;
+            setMyRanking(currentRanking => {
+                // 🔥 SURGICAL FIX: Solo mantenemos las ciudades VIVAS (en serverCands)
+                // Si el servidor dice que Estocolmo murió, aquí lo enterramos localmente.
                 const serverIds = new Set(serverCands.map((c: any) => c.id));
-                const existingOrdered = current.filter(c => serverIds.has(c.id));
-                const currentIds = new Set(current.map(c => c.id));
-                const newItems = serverCands.filter((c: any) => !currentIds.has(c.id));
-                return [...existingOrdered, ...newItems];
+                return currentRanking.filter(c => serverIds.has(c.id));
             });
         }
     };
@@ -578,7 +658,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
 
     const handleLogOut = () => {
         showConfirm("¿Quieres salir de este viaje? Perderás el acceso directo hasta que vuelvas a introducir el código.", () => {
-            localStorage.removeItem('travelSphereUser');
+            sessionStorage.removeItem('travelSphereUser');
             setUser(null);
             setView('lobby');
             setLobbyMode('start');
@@ -647,6 +727,40 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         refreshWallet();
     };
 
+    const handleAdminEliminationVote = async (eliminatedIds: string[]) => {
+        if (!user?.esAdmin) return;
+        console.log('🗑️ Eliminando ciudades:', eliminatedIds);
+
+        try {
+            // 1. PRIMERO: Eliminar las ciudades caídas de la base de datos
+            for (const id of eliminatedIds) {
+                await fetch('http://localhost:3005/api/voting/borrar', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ candidaturaId: id })
+                });
+            }
+            // Resetear votos en el backend
+            await fetch('http://localhost:3005/api/voting/reset-votes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ viajeId: user.viajeId })
+            });
+
+            // Clear local state immediately for Admin
+            setGuestEliminationResults(null);
+            setAllUsersVoted(false);
+            setHasVoted(false);
+
+            await refreshCandidates();
+            showAlert("Ronda finalizada. ¡Seguimos!");
+
+        } catch (e) {
+            console.error(e);
+            showAlert("Error al procesar eliminación");
+        }
+    };
+
     const handleSearch = async () => { if (!searchQuery) return; setIsLoadingMap(true); setRecommendations([]); try { const res = await fetch(`http://localhost:3005/api/buscar-sitios?busqueda=${encodeURIComponent(searchQuery)}&lat=${cityCoords[0]}&lng=${cityCoords[1]}&radio=${searchRadius}`); const data = await res.json(); if (data.sitios?.length > 0) setRecommendations(data.sitios); else alert(`Sin resultados.`); } catch (error) { console.error(error); } finally { setIsLoadingMap(false); } };
 
     const getDaysInMonth = (date: Date) => { const year = date.getFullYear(); const month = date.getMonth(); const days = new Date(year, month + 1, 0).getDate(); const firstDay = new Date(year, month, 1).getDay(); const emptyDays = firstDay === 0 ? 6 : firstDay - 1; return { days, emptyDays }; };
@@ -659,12 +773,44 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         return (<div className="fixed inset-0 z-[5000] bg-[#F8F5F2] flex items-center justify-center p-6"><div className="w-full max-w-md bg-white p-12 rounded-[2rem] shadow-xl animate-enter relative overflow-hidden border border-[#E7E5E4]"><div className="absolute top-0 left-0 w-full h-2 bg-[#1B4332]"></div><div className="flex justify-center mb-6"><div className="bg-[#E8F5E9] p-4 rounded-full"><Compass size={40} className="text-[#1B4332]" strokeWidth={1.5} /></div></div><h1 className="text-3xl serif-font text-center text-[#1B4332] mb-2">{lobbyMode === 'start' ? 'TravelSphere' : lobbyMode === 'create_choice' ? 'Diseña tu Viaje' : lobbyMode === 'create_voting' ? 'Misión Democrática' : 'Comenzar Aventura'}</h1><p className="text-center text-[#78716C] mb-8 text-sm tracking-wide">{lobbyMode === 'start' ? 'El arte de viajar en compañía.' : lobbyMode === 'create_choice' ? '¿Tenéis claro el rumbo?' : lobbyMode === 'create_voting' ? 'El grupo decidirá el destino.' : 'Configura los detalles finales.'}</p>{lobbyMode === 'start' && (<div className="space-y-4"><button onClick={() => setLobbyMode('create_choice')} className="w-full py-5 btn-primary text-lg flex items-center justify-center gap-3 shadow-lg shadow-[#1B4332]/10"><Plus size={20} /> Crear Experiencia</button><button onClick={() => setLobbyMode('join')} className="w-full py-5 btn-secondary text-lg font-medium flex items-center justify-center gap-3"><LogIn size={20} /> Unirse al Grupo</button></div>)}{lobbyMode === 'create_choice' && (<div className="space-y-4 animate-enter"><button onClick={() => setLobbyMode('create_fixed')} className="w-full p-6 bg-[#F8F5F2] border border-[#E7E5E4] rounded-2xl hover:border-[#1B4332] hover:bg-[#E8F5E9] transition-all group text-left flex items-center gap-4"><div className="bg-white p-3 rounded-full text-[#1B4332] group-hover:scale-110 transition-transform"><MapPin size={24} /></div><div><h3 className="font-bold text-[#1B4332] text-lg">Destino Definido</h3><p className="text-xs text-[#78716C]">Ya sabemos a dónde vamos.</p></div></button><button onClick={() => setLobbyMode('create_voting')} className="w-full p-6 bg-[#F8F5F2] border border-[#E7E5E4] rounded-2xl hover:border-[#1B4332] hover:bg-[#E8F5E9] transition-all group text-left flex items-center gap-4"><div className="bg-white p-3 rounded-full text-[#1B4332] group-hover:scale-110 transition-transform"><Vote size={24} /></div><div><h3 className="font-bold text-[#1B4332] text-lg">Someter a Votación</h3><p className="text-xs text-[#78716C]">Decidiremos el destino juntos.</p></div></button><button onClick={() => setLobbyMode('start')} className="w-full py-3 text-sm text-[#78716C] hover:text-[#1B4332] flex items-center justify-center gap-2 mt-4"><ArrowRight className="rotate-180" size={16} /> Volver</button></div>)}{(lobbyMode === 'create_fixed' || lobbyMode === 'create_voting' || lobbyMode === 'join') && (<div className="space-y-6 animate-enter"><div><label className="text-[10px] font-bold text-[#78716C] uppercase ml-1 tracking-widest">{lobbyMode === 'create_fixed' ? 'Destino' : lobbyMode === 'join' ? 'Código de Acceso' : 'Nombre del Grupo'}</label><input type="text" autoFocus className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332] transition-all placeholder:text-[#D6D3D1]" placeholder={lobbyMode === 'create_fixed' ? "Ej: París" : lobbyMode === 'join' ? "ABC123" : "Ej: Verano 2026"} maxLength={lobbyMode === 'join' ? 6 : 50} value={lobbyMode === 'join' ? lobbyForm.codigo : lobbyForm.destino} onChange={e => lobbyMode === 'join' ? setLobbyForm({ ...lobbyForm, codigo: e.target.value.toUpperCase() }) : setLobbyForm({ ...lobbyForm, destino: e.target.value })} /></div><div><label className="text-[10px] font-bold text-[#78716C] uppercase ml-1 tracking-widest">Tu Nombre</label><input type="text" className="w-full bg-[#F8F5F2] p-4 rounded-xl text-xl text-[#1B4332] serif-font outline-none focus:ring-1 ring-[#1B4332] transition-all placeholder:text-[#D6D3D1]" placeholder="Ej: Ana" value={lobbyForm.nombre} onChange={e => setLobbyForm({ ...lobbyForm, nombre: e.target.value })} /></div>{lobbyError && <p className="text-[#9B2226] text-xs font-medium text-center bg-[#FEF2F2] py-2 rounded-lg">{lobbyError}</p>}<div className="flex gap-4 pt-4"><button onClick={() => { setLobbyMode('start'); setLobbyError('') }} className="p-4 rounded-full bg-[#F8F5F2] text-[#78716C] hover:bg-gray-200 transition-colors"><ArrowRight size={24} className="rotate-180" /></button><button onClick={() => lobbyMode === 'join' ? handleJoinTrip() : handleCreateTrip(lobbyMode === 'create_voting')} className="flex-1 py-4 btn-primary text-lg shadow-xl shadow-[#1B4332]/20">{lobbyMode === 'create_voting' ? 'Abrir Votación' : lobbyMode === 'create_fixed' ? 'Comenzar' : 'Entrar'}</button></div></div>)}</div></div>);
     }
 
+
+
+
     // 2. VOTING ROOM (CONECTADO Y ROBUSTO)
     if (view === 'voting_room') {
         const tripCode = user.viajeCodigo || "OZHD";
         const hasDate = !!votingStartDate;
         const isTimeUp = hasDate && now >= new Date(votingStartDate);
-        const shouldShowVoting = isTimeUp || isVotingOpen;
+        // 🔥 FIX: Solo mostrar votación si HAY FECHA y (se acabó el tiempo O está abierta explícitamente)
+        const shouldShowVoting = hasDate && (isTimeUp || isVotingOpen);
+
+        // 🔥 SYNC: Si hay resultados revelados, MOSTRAR PANTALLA A TODOS (Admin + Guests)
+        // Esto corrige el bug donde el Admin veía una ronda "adelantada" con cálculo erróneo.
+        if (guestEliminationResults && !view.includes('results_forced')) {
+            return (
+                <div className="fixed inset-0 z-[200] bg-[#F8F5F2] flex flex-col">
+                    <div className="flex-1 overflow-y-auto p-6 pb-32">
+                        <EliminationScreen
+                            candidaturas={candidaturas}
+                            onVote={handleAdminEliminationVote}
+                            phase="purga"
+                            viajeId={user.viajeId}
+                            esAdmin={!!user.esAdmin}
+                            forcedResults={guestEliminationResults}
+                            onGuestDismiss={async () => {
+                                await refreshCandidates(); // 🔥 REFRESH FRESH DATA (10 cities, not 13)
+                                setGuestEliminationResults(null);
+                            }}
+                        />
+                    </div>
+                    {!user.esAdmin && (
+                        <div className="p-4 text-center text-[#78716C] italic text-xs">
+                            Esperando a que el Organizador confirme la eliminación...
+                        </div>
+                    )}
+                </div>
+            );
+        }
 
         if (shouldShowVoting) {
             // Si ya votó...
@@ -682,43 +828,23 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
                     );
                 }
 
-                // TODOS han votado → Mostrar resultados
+                // TODOS han votado (Fallback si no hay guestEliminationResults por alguna razón)
                 return (
                     <div className="fixed inset-0 z-[200] bg-[#F8F5F2] flex flex-col">
                         <div className="flex-1 overflow-y-auto p-6 pb-32">
                             <EliminationScreen
                                 candidaturas={candidaturas}
-                                onVote={async (eliminatedIds: string[]) => {
-                                    console.log('🗑️ Eliminando ciudades:', eliminatedIds);
-
-                                    // 1. PRIMERO: Eliminar las ciudades caídas de la base de datos
-                                    for (const id of eliminatedIds) {
-                                        await fetch('http://localhost:3005/api/voting/borrar', {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({ candidaturaId: id })
-                                        });
-                                    }
-                                    // Resetear votos en el backend
-                                    await fetch('http://localhost:3005/api/voting/reset-votes', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ viajeId: user.viajeId })
-                                    });
-
-                                    // Resetear estados locales
-                                    setHasVoted(false);
-                                    setAllUsersVoted(false);
-
-                                    // Refrescar candidaturas (ahora mostrarán solo las sobrevivientes)
-                                    await refreshCandidates();
-                                }}
+                                onVote={handleAdminEliminationVote}
                                 phase="purga"
+                                viajeId={user.viajeId}
+                                esAdmin={!!user.esAdmin}
                             />
                         </div>
                     </div>
                 );
             }
+
+
 
             // FASE DE VOTACIÓN (Tablero)
             return (

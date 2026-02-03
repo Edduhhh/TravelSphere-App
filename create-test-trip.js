@@ -7,8 +7,8 @@ console.log('\n🎯 CREANDO VIAJE DE PRUEBA CON CANDIDATOS PRECARGADOS\n');
 // 1. Crear viaje
 const codigo = 'TEST' + Math.random().toString(36).substring(2, 6).toUpperCase();
 const resultado = db.prepare(`
-    INSERT INTO viajes (codigo, destino, fecha_inicio, fecha_fin, estado)
-    VALUES (?, 'PENDIENTE: Europa 2026', '2026-08-01', '2026-08-15', 'PLANNING')
+    INSERT INTO viajes (codigo, destino, fecha_inicio, fecha_fin)
+    VALUES (?, 'PENDIENTE: Europa 2026', '2026-08-01', '2026-08-15')
 `).run(codigo);
 
 const viajeId = resultado.lastInsertRowid;
@@ -38,8 +38,8 @@ console.log(`\n✅ Añadiendo ${ciudades.length} candidatos:`);
 
 ciudades.forEach((ciudad, index) => {
     const candId = db.prepare(`
-        INSERT INTO candidaturas (viaje_id, usuario_id, ciudad, puntos, votos_pos1, votos_pos2, votos_pos3)
-        VALUES (?, ?, ?, 0, 0, 0, 0)
+        INSERT INTO candidaturas (viaje_id, usuario_id, ciudad)
+        VALUES (?, ?, ?)
     `).run(viajeId, eduId, ciudad).lastInsertRowid;
 
     console.log(`   ${index + 1}. ${ciudad} (ID: ${candId})`);

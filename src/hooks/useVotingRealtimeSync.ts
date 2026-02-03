@@ -16,9 +16,9 @@ export const useVotingRealtimeSync = (
 
         console.log(`🔥 [REALTIME] Suscrito a cambios en trip: ${tripCode}`);
 
-        // Suscribirse a cambios en tabla 'trips' para este código
         const channel = supabase
             .channel(`trip-${tripCode}`)
+            // 1. Cambios en el ESTADO DEL VIAJE (Fechas, Fase)
             .on(
                 'postgres_changes',
                 {
@@ -28,8 +28,22 @@ export const useVotingRealtimeSync = (
                     filter: `code=eq.${tripCode}`
                 },
                 (payload) => {
-                    console.log('🔥 [REALTIME] Cambio detectado:', payload.new);
-                    onVotingStateChange(payload.new);
+                    console.log('🔥 [REALTIME TRIP] Cambio detectado:', payload.new);
+                    onVotingStateChange({ type: 'trip_update', data: payload.new });
+                }
+            )
+            // 2. Cambios en CANDIDATOS (Nuevas ciudades o eliminaciones)
+            .on(
+                'postgres_changes',
+                {
+                    event: '*',
+                    schema: 'public',
+                    table: 'candidates',
+                    filter: `trip_code=eq.${tripCode}`
+                },
+                (payload) => {
+                    console.log('🔥 [REALTIME CANDIDATE] Cambio en candidatos:', payload);
+                    onVotingStateChange({ type: 'candidates_changed', data: payload });
                 }
             )
             .subscribe((status) => {

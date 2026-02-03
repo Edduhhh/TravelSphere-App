@@ -6,20 +6,80 @@ interface EliminationScreenProps {
     onVote: (eliminatedIds: string[]) => void;
     phase: string;
     viajeId: number;
+    esAdmin?: boolean;
+    forcedResults?: { eliminatedIds: string[], survivorsCount: number } | null;
+    onGuestDismiss?: () => void;
 }
 
-export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidaturas, onVote, phase, viajeId }) => {
+export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidaturas, onVote, phase, viajeId, esAdmin, forcedResults, onGuestDismiss }) => {
     const [step, setStep] = useState<'calculating' | 'result'>('calculating');
     const [eliminatedCities, setEliminatedCities] = useState<any[]>([]);
     const [survivors, setSurvivors] = useState<any[]>([]);
+    const [winner, setWinner] = useState<any>(null);
+
+    // --- LÓGICA DIVIDIDA: ADMIN CALCULA, GUEST OBSERVA ---
+
+    // Referencia para detectar cambios en guests
+    const prevCandidaturasRef = React.useRef<any[]>(candidaturas);
 
     useEffect(() => {
-        fetchEliminationResults();
-    }, [candidaturas, viajeId]);
+        // 🔥 SI HAY RESULTADOS FORZADOS (Invitado Sync), USARLOS DIRECTAMENTE
+        if (forcedResults) {
+            console.log('⚡ SYNC: Usando resultados forzados en EliminationScreen');
+            const elim = candidaturas.filter(c => forcedResults.eliminatedIds.includes(c.id.toString()) || forcedResults.eliminatedIds.includes(c.id));
+            const surv = candidaturas.filter(c => !forcedResults.eliminatedIds.includes(c.id.toString()) && !forcedResults.eliminatedIds.includes(c.id));
 
-    const fetchEliminationResults = async () => {
+            setEliminatedCities(elim);
+            setSurvivors(surv);
+            setStep('result');
+            return;
+        }
+
+        if (viajeId) {
+            if (esAdmin) { // FIXED: Use prop directly
+                // ADMIN: Es el "Director de Orquesta". Ejecuta la eliminación.
+                handleAdminCalculation();
+            } else {
+                // GUEST: Es el "Espectador". Espera a ver qué desaparece.
+                console.log('👀 GUEST: Esperando resultados de eliminación...');
+            }
+        }
+    }, [viajeId, esAdmin, forcedResults]); // Added forcedResults
+
+    // GUEST WATCHER: Detectar eliminaciones mirando los props
+    useEffect(() => {
+        if (esAdmin || step === 'result') return; // Admin ya sabe, y si ya tenemos resultado, stop.
+
+        const prev = prevCandidaturasRef.current;
+        const current = candidaturas;
+
+        // Si la longitud baja, alguien ha sido eliminado
+        if (current.length < prev.length) {
+            console.log('⚡ GUEST: Detectada eliminación por cambio de lista!');
+
+            // Encontrar quién falta
+            const currentIds = new Set(current.map(c => c.id));
+            const eliminated = prev.filter(c => !currentIds.has(c.id));
+
+            if (eliminated.length > 0) {
+                console.log('💀 GUEST: Víctimas identificadas:', eliminated);
+                setEliminatedCities(eliminated);
+                setSurvivors(current);
+                setStep('result');
+            }
+        }
+
+        // Actualizar ref para siguiente render
+        prevCandidaturasRef.current = current;
+    }, [candidaturas, esAdmin, step]);
+
+
+    const handleAdminCalculation = async () => {
+        // Double check to prevent rogue calls
+        if (!esAdmin) return;
+
         try {
-            console.log('🔥 Llamando al servidor para calcular eliminaciones...');
+            console.log('🔥 ADMIN: Llamando al servidor para calcular eliminaciones...');
 
             const response = await fetch('http://localhost:3005/api/voting/calcular-eliminaciones', {
                 method: 'POST',
@@ -28,34 +88,74 @@ export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidatur
             });
 
             const data = await response.json();
-            console.log('📥 Respuesta del servidor:', data);
+            console.log('📥 ADMIN: Respuesta del servidor:', data);
 
             if (data.success) {
                 if (data.phase === 'FINAL') {
                     console.log('🏆 FASE FINAL - Ganador:', data.winner);
-                    // Handle winner case if needed
+                    setWinner(data.winner);
                 } else {
-                    // Get eliminated cities data
+                    // Get eliminated cities
                     const eliminatedIds = data.eliminated.map((e: any) => e.id);
-
-                    // Find full city data from candidaturas
                     const eliminatedFull = candidaturas.filter(c => eliminatedIds.includes(c.id));
                     const survivorsFull = candidaturas.filter(c => !eliminatedIds.includes(c.id));
 
-                    console.log(`❌ Eliminadas: ${eliminatedFull.map(c => c.ciudad).join(', ')}`);
-                    console.log(`✅ Sobreviven: ${survivorsFull.length} ciudades`);
-
                     setEliminatedCities(eliminatedFull);
                     setSurvivors(survivorsFull);
-                }
 
+                    // 🔥 ANUNCIAR RESULTADOS A TODOS (Sync Drama)
+                    await fetch('http://localhost:3005/api/voting/anunciar-resultados', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            viajeId,
+                            eliminatedIds: eliminatedIds.map((id: any) => String(id)),
+                            survivorsCount: survivorsFull.length
+                        })
+                    });
+                }
                 setStep('result');
             }
         } catch (error) {
-            console.error('❌ Error al obtener eliminaciones:', error);
+            console.error('❌ Error admin calculation:', error);
+            // Fallback: mostrar resultado si falla
             setStep('result');
         }
     };
+
+    if (winner) {
+        return (
+            <div className="flex flex-col h-full p-4 animate-in zoom-in duration-700 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] bg-[#1B4332]">
+                <div className="text-center mt-10 mb-8">
+                    <Trophy size={64} className="text-[#FFD700] mx-auto mb-4 animate-bounce" />
+                    <h1 className="text-4xl font-black text-white uppercase tracking-tighter drop-shadow-md">
+                        ¡HABEMUS DESTINUM!
+                    </h1>
+                    <p className="text-emerald-200 mt-2 font-medium text-lg">
+                        La decisión ha sido tomada
+                    </p>
+                </div>
+
+                <div className="bg-white/10 backdrop-blur-md border border-white/20 p-8 rounded-3xl mx-4 text-center shadow-2xl">
+                    <h2 className="text-5xl font-black text-white mb-2 drop-shadow-lg transform scale-110">
+                        {winner.ciudad}
+                    </h2>
+                    <p className="text-emerald-100 uppercase tracking-widest text-sm">
+                        Destino Final
+                    </p>
+                </div>
+
+                <div className="mt-auto pb-8">
+                    <button
+                        onClick={() => window.location.reload()}
+                        className="w-full py-5 bg-[#FFD700] text-[#1B4332] rounded-xl font-bold text-lg shadow-2xl flex items-center justify-center gap-3 hover:bg-[#F0C000] active:scale-95 transition-all"
+                    >
+                        VER RESULTADOS <ArrowRight />
+                    </button>
+                </div>
+            </div>
+        );
+    }
 
     if (step === 'calculating') {
         return (
@@ -112,7 +212,14 @@ export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidatur
                 </div>
 
                 <button
-                    onClick={() => onVote(eliminatedCities.map(c => c.id))}
+                    onClick={() => {
+                        if (esAdmin) {
+                            onVote(eliminatedCities.map(c => c.id));
+                        } else {
+                            if (onGuestDismiss) onGuestDismiss();
+                            else window.location.reload();
+                        }
+                    }}
                     className="w-full py-5 bg-[#1B4332] text-white rounded-xl font-bold text-lg shadow-2xl flex items-center justify-center gap-3 hover:bg-[#2D6A4F] active:scale-95 transition-all"
                 >
                     CONTINUAR <ArrowRight />

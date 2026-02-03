@@ -1,0 +1,13 @@
+CREATE TABLE candidaturas (
+    id INTEGER PRIMARY KEY, 
+    viaje_id INTEGER, 
+    usuario_id INTEGER, 
+    ciudad TEXT, 
+    puntos INTEGER DEFAULT 0, 
+    votos_pos1 INTEGER DEFAULT 0, 
+    votos_pos2 INTEGER DEFAULT 0, 
+    votos_pos3 INTEGER DEFAULT 0, 
+    datos_viabilidad TEXT, 
+    foto_url TEXT, eliminada INTEGER DEFAULT 0, 
+    FOREIGN KEY(viaje_id) REFERENCES viajes(id)
+  )

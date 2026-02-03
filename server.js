@@ -35,6 +35,18 @@ const supabaseServer = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persis
 // Base de Datos Local
 const db = new Database('viajes_pro.db');
 
+// --- SSE INFRASTRUCTURE (Event Bridge) ---
+let clients = [];
+
+// Función para enviar eventos a todos (ahora definida globalmente)
+function notifyClients(event) {
+    console.log(`📡 [BROADCAST] Enviando evento: ${event.type}`);
+    clients.forEach(client => {
+        client.res.write(`data: ${JSON.stringify(event)}\n\n`);
+    });
+}
+
+
 // --- ESTRUCTURA DE BASE DE DATOS LOCAL (COMPLETA) ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS viajes (
@@ -100,6 +112,26 @@ db.exec(`
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// --- SSE ENDPOINT (Puente de Sincronización Local) ---
+app.get('/api/events', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const clientId = Date.now();
+    const newClient = { id: clientId, res };
+    clients.push(newClient);
+
+    console.log(`🔌 [SSE] Cliente conectado from Dashboard (${clients.length} total)`);
+    res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+
+    req.on('close', () => {
+        clients = clients.filter(c => c.id !== clientId);
+        console.log(`🔌 [SSE] Cliente desconectado (${clients.length} total)`);
+    });
+});
 
 // --- HELPERS IA ---
 const generarViabilidad = (ciudad) => {
@@ -253,11 +285,14 @@ app.post('/api/lobby/unirse', (req, res) => {
 
     if (existingUser) {
         console.log(`   ♻️  EXISTING USER FOUND: ID=${existingUser.id}, Name="${existingUser.nombre}"`);
-        console.log('   ✅ Returning existing user (no duplicate created)');
+        console.log(`   ✅ Admin: ${existingUser.es_admin}, Tesorero: ${existingUser.es_tesorero}`);
+        console.log('   ✅ Returning existing user WITH ROLES (no duplicate created)');
         return res.json({
             success: true,
             viajeId: viaje.id,
             userId: existingUser.id,
+            esAdmin: existingUser.es_admin,
+            esTesorero: existingUser.es_tesorero,
             destino: viaje.destino,
             isReturningUser: true
         });
@@ -439,13 +474,7 @@ app.post('/api/roles/actualizar', (req, res) => {
     res.json({ success: true });
 });
 
-// --- VOTACIÓN CIUDAD ---
-app.get('/api/voting/candidaturas', (req, res) => {
-    const { viajeId, usuarioId } = req.query;
-    const candidaturas = db.prepare(`SELECT c.*, u.nombre as propuesto_por FROM candidaturas c JOIN usuarios u ON c.usuario_id = u.id WHERE c.viaje_id = ? ORDER BY c.puntos DESC`).all(viajeId);
-    const localVote = db.prepare('SELECT 1 FROM votos_realizados WHERE viaje_id = ? AND usuario_id = ?').get(viajeId, usuarioId);
-    res.json({ candidaturas: candidaturas.map(c => ({ ...c, datos: JSON.parse(c.datos_viabilidad) })), yaVoto: !!localVote });
-});
+
 
 app.post('/api/voting/proponer', async (req, res) => {
     const { viajeId, usuarioId, ciudad, datos } = req.body;
@@ -506,141 +535,327 @@ app.post('/api/voting/proponer', async (req, res) => {
 });
 
 
+// --- GUARDAR VOTO Y GESTIONAR EL FINAL DE RONDA (BLINDADO CON SEMÁFORO) ---
 app.post('/api/voting/enviar-ranking', async (req, res) => {
     const { viajeId, usuarioId, rankingIds } = req.body;
-    console.log('\n╔══════════════════════════════════════════════════╗');
-    console.log('║          🗳️  GUARDANDO VOTO - DEBUG MODE          ║');
-    console.log('╚══════════════════════════════════════════════════╝');
-    console.log('📊 Request data:');
-    console.log('   viajeId:', viajeId, '(type:', typeof viajeId, ')');
-    console.log('   usuarioId:', usuarioId, '(type:', typeof usuarioId, ')');
-    console.log('   rankingIds:', rankingIds ? rankingIds.join(', ') : '[]');
-    console.log('   rankingIds length:', rankingIds?.length || 0);
+
+    console.log(`🗳️ [VOTO] Recibido de Usuario ${usuarioId} para Viaje ${viajeId}`);
 
     try {
-        // STEP 0: VALIDAR QUE EL USUARIO EXISTE Y PERTENECE AL VIAJE
-        console.log('\n[STEP 0] 🔍 VALIDANDO IDENTIDAD DEL USUARIO...');
-        if (!usuarioId || usuarioId === null || usuarioId === undefined) {
-            console.error('   ❌ ERROR CRÍTICO: usuarioId es NULL/UNDEFINED!');
-            return res.status(400).json({
-                error: "Usuario no identificado - Por favor recarga la página",
-                errorType: "NULL_USER_ID"
-            });
-        }
-
-        const usuario = db.prepare('SELECT * FROM usuarios WHERE id = ? AND viaje_id = ?').get(usuarioId, viajeId);
-        if (!usuario) {
-            console.error('   ❌ USUARIO NO ENCONTRADO EN BD!');
-            console.error(`      Buscando: ID=${usuarioId}, ViajeID=${viajeId}`);
-
-            // Mostrar usuarios reales del viaje para debug
-            const usuariosReales = db.prepare('SELECT id, nombre FROM usuarios WHERE viaje_id = ?').all(viajeId);
-            console.error('      Usuarios REALES en este viaje:');
-            usuariosReales.forEach(u => console.error(`         - ID: ${u.id}, Nombre: ${u.nombre}`));
-
-            return res.status(400).json({
-                error: `Usuario ID ${usuarioId} no pertenece a este viaje`,
-                errorType: "INVALID_USER_ID"
-            });
-        }
-        console.log(`   ✅ Usuario identificado: ID=${usuario.id}, Nombre="${usuario.nombre}"`);
-
-        // STEP 1: Verificar duplicado
-        console.log('\n[STEP 1] Checking for duplicate vote...');
-        const yaVoto = db.prepare('SELECT 1 FROM votos_realizados WHERE viaje_id = ? AND usuario_id = ?').get(viajeId, usuarioId);
-        console.log('   Query result:', yaVoto ? 'ALREADY VOTED' : 'OK');
-
-        if (yaVoto) {
-            console.log(`   ⚠️  DUPLICATE VOTE DETECTED - Usuario "${usuario.nombre}" ya votó`);
-            return res.status(400).json({ error: "Ya votaste" });
-        }
-
-        // STEP 2: Verificar que todos los candidatos existen
-        console.log('\n[STEP 2] Validating candidate IDs...');
-        for (let i = 0; i < rankingIds.length; i++) {
-            const candId = rankingIds[i];
-            const exists = db.prepare('SELECT id, ciudad FROM candidaturas WHERE id = ?').get(candId);
-            if (!exists) {
-                console.error(`   ❌ CANDIDATE ${candId} NOT FOUND in database!`);
-                return res.status(400).json({ error: `Invalid candidate ID: ${candId}` });
-            }
-            console.log(`   ✅ Candidate ${i + 1}/${rankingIds.length}: ID=${candId}, City=${exists.ciudad}`);
-        }
-
-        // STEP 3: Preparar statements
-        console.log('\n[STEP 3] Preparing SQL statements...');
-        const updatePoints = db.prepare('UPDATE candidaturas SET puntos = puntos + ?, votos_pos1 = votos_pos1 + ?, votos_pos2 = votos_pos2 + ?, votos_pos3 = votos_pos3 + ? WHERE id = ?');
-        const insertDetalle = db.prepare('INSERT INTO votos_detalle (viaje_id, usuario_id, candidatura_id, posicion) VALUES (?, ?, ?, ?)');
-        const markVoted = db.prepare('INSERT INTO votos_realizados (viaje_id, usuario_id) VALUES (?, ?)');
-        console.log('   ✅ Statements prepared');
-
-        // STEP 4: Ejecutar transacción
-        console.log('\n[STEP 4] Starting transaction...');
+        // 1. TRANSACCIÓN DE VOTO (Guardamos el voto de forma segura)
         const tx = db.transaction(() => {
-            console.log('   🔒 Transaction BEGIN');
+            // Verificar si ya votó (Idempotencia)
+            const existing = db.prepare('SELECT 1 FROM votos_realizados WHERE viaje_id = ? AND usuario_id = ?').get(viajeId, usuarioId);
+            if (existing) {
+                db.prepare('DELETE FROM votos_detalle WHERE viaje_id = ? AND usuario_id = ?').run(viajeId, usuarioId);
+                db.prepare('DELETE FROM votos_realizados WHERE viaje_id = ? AND usuario_id = ?').run(viajeId, usuarioId);
+            }
 
-            rankingIds.forEach((candidaturaId, index) => {
-                const points = rankingIds.length - index;
-                const pos = index + 1;
-                const pos1 = pos === 1 ? 1 : 0;
-                const pos2 = pos === 2 ? 1 : 0;
-                const pos3 = pos === 3 ? 1 : 0;
+            // Registrar voto
+            db.prepare('INSERT INTO votos_realizados (viaje_id, usuario_id) VALUES (?, ?)').run(viajeId, usuarioId);
 
-                console.log(`   [${index + 1}/${rankingIds.length}] Processing candidate ${candidaturaId}:`);
-                console.log(`       Points: +${points}, Position: ${pos}`);
-
-                try {
-                    // Update points
-                    const updateResult = updatePoints.run(points, pos1, pos2, pos3, candidaturaId);
-                    console.log(`       UPDATE result: changed=${updateResult.changes}`);
-
-                    // Insert detail
-                    const insertResult = insertDetalle.run(viajeId, usuarioId, candidaturaId, pos);
-                    console.log(`       INSERT detail result: lastID=${insertResult.lastInsertRowid}`);
-                } catch (stepError) {
-                    console.error(`       ❌ ERROR in candidate ${candidaturaId}:`, stepError.message);
-                    throw stepError; // Re-throw to rollback transaction
-                }
+            // Guardar detalle
+            const stmtDetalle = db.prepare('INSERT INTO votos_detalle (viaje_id, usuario_id, candidatura_id, posicion) VALUES (?, ?, ?, ?)');
+            rankingIds.forEach((candId, index) => {
+                stmtDetalle.run(viajeId, usuarioId, candId, index + 1);
             });
-
-            // Mark as voted LAST (only if all candidates processed successfully)
-            console.log(`   Marking user ${usuarioId} ("${usuario.nombre}") as voted...`);
-            const votedResult = markVoted.run(viajeId, usuarioId);
-            console.log(`   ✅ Marked as voted: lastID=${votedResult.lastInsertRowid}`);
-
-            console.log('   🔓 Transaction COMMIT (pending)');
         });
+        tx(); // Ejecutar transacción
+        console.log('   ✅ Voto guardado.');
 
-        console.log('\n[STEP 5] Executing transaction...');
-        tx(); // Execute transaction
-        console.log('   ✅ Transaction COMMITTED successfully!');
+        // 2. COMPROBACIÓN DE "TODOS HAN VOTADO" (CRÍTICO: Evitar doble cálculo)
+        const totalUsers = db.prepare('SELECT COUNT(*) as c FROM usuarios WHERE viaje_id = ?').get(viajeId).c;
+        const votedUsers = db.prepare('SELECT COUNT(DISTINCT usuario_id) as c FROM votos_realizados WHERE viaje_id = ?').get(viajeId).c;
 
-        console.log('\n╔══════════════════════════════════════════════════╗');
-        console.log(`║   ✅ VOTO GUARDADO - Usuario: ${usuario.nombre.padEnd(17)} ║`);
-        console.log('╚══════════════════════════════════════════════════╝\n');
+        console.log(`📊 [CHECK] Votos: ${votedUsers}/${totalUsers}`);
+
+        if (votedUsers >= totalUsers && totalUsers > 0) {
+            // 🛑 SEMÁFORO: Comprobamos si YA se ha cambiado la fase para no repetir
+            const estadoActual = db.prepare('SELECT voting_phase FROM viajes WHERE id = ?').get(viajeId).voting_phase;
+
+            if (estadoActual === 'ELIMINATION' || estadoActual === 'CALCULATING') {
+                console.log('🛡️ [ESCUDO] Cálculo ya en proceso o terminado. Ignorando trigger duplicado.');
+                return res.json({ success: true, status: 'already_calculating' });
+            }
+
+            console.log('🚀 [TRIGGER] ¡Último voto recibido! Iniciando protocolo de eliminación...');
+
+            // 🔒 BLOQUEO INMEDIATO: Ponemos fase CALCULATING para que nadie más entre
+            db.prepare("UPDATE viajes SET voting_phase = 'CALCULATING' WHERE id = ?").run(viajeId);
+
+            // Ejecutamos la lógica (dentro de un try-catch para liberar el bloqueo si falla)
+            try {
+                const result = runEliminationRound(viajeId);
+
+                // Actualizamos fase a ELIMINATION (o FINAL)
+                const nuevaFase = result.phase === 'FINAL' ? 'FINAL' : 'ELIMINATION';
+                db.prepare("UPDATE viajes SET voting_phase = ? WHERE id = ?").run(nuevaFase, viajeId);
+
+                // 📢 BROADCAST ÚNICO Y SINCRONIZADO
+                notifyClients({
+                    type: 'elimination_reveal',
+                    data: {
+                        eliminatedIds: result.eliminated.map(e => e.id),
+                        survivorsCount: result.survivors,
+                        winner: result.winner || null,
+                        phase: nuevaFase
+                    }
+                });
+                console.log('💀 [BROADCAST] Resultados enviados a TODOS los clientes.');
+
+            } catch (calcError) {
+                console.error('❌ Error en auto-cálculo:', calcError);
+                // Si falla, volvemos a fase VOTING para intentar arreglarlo
+                db.prepare("UPDATE viajes SET voting_phase = 'VOTING' WHERE id = ?").run(viajeId);
+            }
+        }
 
         res.json({ success: true });
 
     } catch (e) {
-        console.error('\n╔══════════════════════════════════════════════════╗');
-        console.error('║            ❌ ERROR CRÍTICO                       ║');
-        console.error('╚══════════════════════════════════════════════════╝');
-        console.error('Error type:', e.constructor.name);
-        console.error('Error message:', e.message);
-        console.error('Error code:', e.code || 'N/A');
-        console.error('Error stack:', e.stack);
-        console.error('═══════════════════════════════════════════════════\n');
-
-        res.status(500).json({
-            error: e.message || "Error desconocido",
-            errorType: e.constructor.name,
-            errorCode: e.code
-        });
+        console.error('❌ Error procesando voto:', e);
+        res.status(500).json({ error: e.message });
     }
 });
 
 
-// --- ANULAR VOTO (EMERGENCY RESET) ---
+
+app.get('/api/viaje/estado', (req, res) => {
+    const { viajeId } = req.query;
+    try {
+        const viaje = db.prepare('SELECT voting_start_date, voting_phase, destino FROM viajes WHERE id = ?').get(viajeId);
+        if (!viaje) return res.status(404).json({ error: 'Viaje no encontrado' });
+
+        res.json({
+            voting_start_date: viaje.voting_start_date,
+            voting_phase: viaje.voting_phase,
+            is_voting_open: viaje.voting_phase === 'VOTING',
+            destino: viaje.destino
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
+
+// --- OBTENER CANDIDATURAS (FILTRADAS) ---
+// --- OBTENER CANDIDATURAS (FILTRADAS) ---  <-- DELETED DUPLICATE
+
+
+// --- LÓGICA CORE DE ELIMINACIÓN (Reutilizable) ---
+function runEliminationRound(viajeId) {
+    const candidaturas = db.prepare('SELECT * FROM candidaturas WHERE viaje_id = ? AND eliminada = 0').all(viajeId);
+    const totalCities = candidaturas.length;
+    const votosRaw = db.prepare('SELECT * FROM votos_detalle WHERE viaje_id = ?').all(viajeId);
+
+    // Agrupar votos
+    const votesByUser = {};
+    votosRaw.forEach(v => {
+        if (!votesByUser[v.usuario_id]) votesByUser[v.usuario_id] = { rankedCityIds: [] };
+        // fill array, 0 is empty, 1-based index
+        votesByUser[v.usuario_id].rankedCityIds[v.posicion] = v.candidatura_id.toString();
+    });
+    const votes = Object.values(votesByUser).map(u => ({ rankedCityIds: u.rankedCityIds.filter(id => id) }));
+
+    // LÓGICA DE REGLAS
+    let eliminateCount = 1;
+    let phase = 'ELIMINATION';
+    const count = parseInt(totalCities, 10);
+
+    if (count <= 3) {
+        phase = 'FINAL';
+        eliminateCount = 0;
+    } else if (count > 8) {
+        const excess = count - 8;
+        eliminateCount = Math.max(1, Math.min(3, excess));
+    }
+
+
+
+    // PUNTUACIÓN (Borda invertido o directo? El usuario quiere eliminar los menos votados)
+    // PUNTUACIÓN (Borda + Desempates de "Voto Olímpico")
+    const scores = {};
+    candidaturas.forEach(c => scores[c.id] = {
+        id: c.id,
+        points: 0,
+        ciudad: c.ciudad,
+        votes1: 0, // Veces primero
+        votes2: 0, // Veces segundo
+        votes3: 0  // Veces tercero
+    });
+
+    votes.forEach(vote => {
+        vote.rankedCityIds.forEach((cityId, index) => {
+            if (scores[cityId]) {
+                scores[cityId].points += (totalCities - index);
+                if (index === 0) scores[cityId].votes1++;
+                if (index === 1) scores[cityId].votes2++;
+                if (index === 2) scores[cityId].votes3++;
+            }
+        });
+    });
+
+    const sorted = Object.values(scores).sort((a, b) => {
+        if (b.points !== a.points) return b.points - a.points; // 1. Puntos
+        if (b.votes1 !== a.votes1) return b.votes1 - a.votes1; // 2. Más primeros puestos
+        if (b.votes2 !== a.votes2) return b.votes2 - a.votes2; // 3. Más segundos puestos
+        if (b.votes3 !== a.votes3) return b.votes3 - a.votes3; // 4. Más terceros puestos
+        return Math.random() - 0.5; // 5. Azar (muy raro)
+    });
+
+    let eliminated = [];
+    let winner = null;
+
+    if (phase === 'FINAL') {
+        const finalWinner = Object.values(scores).sort((a, b) => b.points - a.points)[0]; // Más puntos gana
+        winner = finalWinner;
+    } else {
+        eliminated = sorted.slice(0, eliminateCount);
+        // DELETE FROM DB
+        eliminated.forEach(e => {
+            db.prepare('UPDATE candidaturas SET eliminada = 1 WHERE id = ?').run(e.id);
+        });
+    }
+
+    return { success: true, phase, eliminated, winner, eliminateCount, survivors: totalCities - eliminateCount };
+}
+
+// --- CÁLCULO DE ELIMINACIONES (Algoritmo Completo) ---
+app.post('/api/voting/calcular-eliminaciones', (req, res) => {
+    const { viajeId } = req.body;
+    console.log(`🧮 [CÁLCULO] Solicitado para Viaje: ${viajeId}`);
+
+    try {
+        const candidaturas = db.prepare('SELECT * FROM candidaturas WHERE viaje_id = ? AND eliminada = 0').all(viajeId);
+        const totalCities = candidaturas.length;
+        const votosRaw = db.prepare('SELECT * FROM votos_detalle WHERE viaje_id = ?').all(viajeId);
+
+        // Agrupar votos
+        const votesByUser = {};
+        votosRaw.forEach(v => {
+            if (!votesByUser[v.usuario_id]) votesByUser[v.usuario_id] = { rankedCityIds: [] };
+            votesByUser[v.usuario_id].rankedCityIds[v.posicion] = v.candidatura_id.toString();
+        });
+        const votes = Object.values(votesByUser).map(u => ({ rankedCityIds: u.rankedCityIds.filter(id => id) }));
+
+        // LÓGICA DE REGLAS (Replica src/utils/votingAlgorithm.ts)
+        let eliminateCount = 1;
+        let phase = 'ELIMINATION';
+        // Ensure integer
+        const count = parseInt(totalCities, 10);
+
+        console.log(`   📊 LOGIC CHECK: Active Candidates: ${candidaturas.map(c => c.ciudad).join(', ')}`);
+
+        if (count <= 3) {
+            phase = 'FINAL';
+            eliminateCount = 0;
+        } else if (count > 8) {
+            const excess = count - 8;
+            console.log(`   📊 Excess calc: ${count} - 8 = ${excess}`);
+            eliminateCount = Math.max(1, Math.min(3, excess));
+            console.log(`   📊 Eliminate count: Math.min(3, ${excess}) = ${eliminateCount}`);
+        }
+
+
+
+        console.log(`   📊 Total: ${count}, Eliminate: ${eliminateCount}`);
+
+        // PUNTUACIÓN (Borda + Desempates de "Voto Olímpico")
+        const scores = {};
+        candidaturas.forEach(c => scores[c.id] = {
+            id: c.id,
+            points: 0,
+            ciudad: c.ciudad,
+            votes1: 0,
+            votes2: 0,
+            votes3: 0
+        });
+
+        votes.forEach(vote => {
+            vote.rankedCityIds.forEach((cityId, index) => {
+                if (scores[cityId]) {
+                    scores[cityId].points += (totalCities - index);
+                    if (index === 0) scores[cityId].votes1++;
+                    if (index === 1) scores[cityId].votes2++;
+                    if (index === 2) scores[cityId].votes3++;
+                }
+            });
+        });
+
+        // Ordenar: Descendente (Mayor Puntuación/Mayor Importancia = Arriba)
+        const sorted = Object.values(scores).sort((a, b) => {
+            if (b.points !== a.points) return b.points - a.points;
+            if (b.votes1 !== a.votes1) return b.votes1 - a.votes1;
+            if (b.votes2 !== a.votes2) return b.votes2 - a.votes2;
+            if (b.votes3 !== a.votes3) return b.votes3 - a.votes3;
+            return Math.random() - 0.5;
+        });
+
+        // RESULTADO
+        let resultData = {};
+        if (phase === 'FINAL') {
+            // En Final, gana el MENOS odiado (último de la lista sorted desc)
+            // O si cambiamos a 'Favorito', gana el primero. 
+            // Mantenemos lógica de 'Superviviente' = Menos puntos de odio
+            resultData = { winner: sorted[sorted.length - 1], phase: 'FINAL' };
+        } else {
+            const eliminated = sorted.slice(0, eliminateCount);
+            resultData = { eliminated, phase: 'ELIMINATION' };
+        }
+
+        console.log('   ✅ Calculated:', JSON.stringify(resultData));
+        res.json({ success: true, ...resultData });
+
+    } catch (e) {
+        console.error('   ❌ Error calculating:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
+
+
+// --- RESETER VOTOS (Para siguiente ronda) ---
+app.post('/api/voting/reset-votes', (req, res) => {
+    const { viajeId } = req.body;
+    console.log(`🔄 [RESET] Limpiando votos y puntos para nueva ronda. Viaje: ${viajeId}`);
+
+    try {
+        const tx = db.transaction(() => {
+            // 1. Borrar votos
+            db.prepare('DELETE FROM votos_realizados WHERE viaje_id = ?').run(viajeId);
+            db.prepare('DELETE FROM votos_detalle WHERE viaje_id = ?').run(viajeId);
+
+            // 2. Resetear puntos de candidaturas (pero mantener estado eliminada)
+            db.prepare(`
+                UPDATE candidaturas 
+                SET puntos = 0, votos_pos1 = 0, votos_pos2 = 0, votos_pos3 = 0 
+                WHERE viaje_id = ?
+            `).run(viajeId);
+        });
+        tx();
+
+        // 3. Broadcast para refrescar clientes
+        notifyClients({
+            type: 'trip_update',
+            data: {
+                force_refresh: true,
+                voting_phase: 'VOTING', // Mantener en fase de votación
+                action: 'new_round'
+            }
+        });
+
+        // 4. Broadcast específico para recargar grid de candidatos
+        notifyClients({ type: 'candidates_changed', data: { reason: 'new_round' } });
+
+        res.json({ success: true });
+    } catch (e) {
+        console.error('❌ Error resetting votes:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.post('/api/voting/anular-voto', (req, res) => {
     const { viajeId, usuarioId } = req.body;
     console.log('⚠️ [ANULAR VOTO] Solicitado para Usuario:', usuarioId, 'Viaje:', viajeId);
@@ -739,43 +954,151 @@ app.get('/api/voting/progreso', (req, res) => {
     }
 });
 
+// --- ENDPOINTS RECUPERADOS (PROPONER Y LISTAR) ---
+
+
+
+// --- ANUNCIAR RESULTADOS (Broadcast sin borrar aún) ---
+app.post('/api/voting/anunciar-resultados', (req, res) => {
+    const { viajeId, eliminatedIds, survivorsCount } = req.body;
+    console.log(`📢 [ANUNCIO] Resultados pbrovisional: ${eliminatedIds.length} eliminados. Sobreviven: ${survivorsCount}`);
+
+    // Broadcast directo a los clientes para que muestren la pantalla de calaveras
+    notifyClients({
+        type: 'elimination_reveal',
+        data: {
+            eliminatedIds,
+            survivorsCount
+        }
+    });
+
+    res.json({ success: true });
+});
+
+// --- BORRAR CANDIDATURA (Gestión Admin) ---
+app.post('/api/voting/borrar', (req, res) => {
+    const { candidaturaId } = req.body;
+    console.log(`🗑️ [BORRAR] Solicitado para ID: ${candidaturaId}`);
+    try {
+        db.prepare('UPDATE candidaturas SET eliminada = 1 WHERE id = ?').run(candidaturaId);
+
+        // CRITICAL: Notify all clients to refresh!
+        notifyClients({ type: 'candidates_changed', data: { action: 'delete', id: candidaturaId } });
+
+        res.json({ success: true });
+    } catch (e) {
+        console.error('   ❌ Error borrando:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// --- OBTENER CANDIDATURAS (VERSIÓN FINAL BLINDADA) ---
+app.get('/api/voting/candidaturas', (req, res) => {
+    console.log("🔥 ¡¡PETICIÓN RECIBIDA!! EJECUTANDO FILTRO... 🔥");
+    const { viajeId, usuarioId } = req.query;
+
+    // 1. PROHIBIR CACHÉ (Obliga al navegador a preguntar siempre)
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    try {
+        // 2. Obtener TODO
+        const rawCandidaturas = db.prepare(`
+            SELECT * FROM candidaturas 
+            WHERE viaje_id = ?
+        `).all(viajeId);
+
+        // 3. 🔥 FILTRO JAVASCRIPT EXTREMO 🔥
+        const candidaturas = rawCandidaturas.filter(c => {
+            // Convertimos a número para asegurar la comparación
+            const val = Number(c.eliminada);
+            // Si es 1, se va fuera.
+            const isDead = val === 1;
+
+            if (isDead) console.log(`💀 Eliminando zombi: ${c.ciudad}`);
+            return !isDead;
+        });
+
+        console.log(`✅ Enviando ${candidaturas.length} ciudades vivas de ${rawCandidaturas.length} totales.`);
+
+        const voteCheck = db.prepare('SELECT COUNT(*) as c FROM votos_realizados WHERE viaje_id = ? AND usuario_id = ?').get(viajeId, usuarioId);
+        const yaVoto = voteCheck ? voteCheck.c > 0 : false;
+
+        res.json({ candidaturas, yaVoto });
+    } catch (e) {
+        console.error("❌ ERROR EN CANDIDATURAS:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/voting/proponer', async (req, res) => {
+    const { viajeId, usuarioId, ciudad } = req.body;
+    console.log(`🏙️ [PROPONER] Viaje: ${viajeId}, Ciudad: ${ciudad}`);
+
+    try {
+        // 1. Check duplicates
+        const exists = db.prepare('SELECT id FROM candidaturas WHERE viaje_id = ? AND ciudad = ? COLLATE NOCASE').get(viajeId, ciudad);
+        if (exists) return res.json({ success: false, message: 'La ciudad ya está propuesta' });
+
+        // 2. Insert LOCAL
+        const result = db.prepare('INSERT INTO candidaturas (viaje_id, usuario_id, ciudad, puntos) VALUES (?, ?, ?, 0)').run(viajeId, usuarioId, ciudad);
+        const newId = result.lastInsertRowid;
+
+        // 3. Sync SUPABASE (Para Realtime)
+        const viaje = db.prepare('SELECT codigo FROM viajes WHERE id = ?').get(viajeId);
+        if (viaje && viaje.codigo) {
+            console.log(`   🔄 Syncing to Supabase table 'candidates'...`);
+            const { error } = await supabaseServer
+                .from('candidates')
+                .insert({
+                    trip_code: viaje.codigo,
+                    city_name: ciudad,
+                    added_by: usuarioId
+                });
+
+            if (error) console.error('   ❌ Supabase Error:', error.message);
+        }
+
+        res.json({ success: true, id: newId });
+    } catch (e) {
+        console.error('   ❌ Error al proponer:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.post('/api/voting/borrar', (req, res) => {
     const { id, candidaturaId } = req.body;
     const finalId = id || candidaturaId;
     if (!finalId) return res.status(400).json({ success: false, message: "ID no recibido" });
 
     try {
+        // 1. Get details BEFORE deleting to sync with Supabase
+        const candidate = db.prepare('SELECT c.ciudad, v.codigo FROM candidaturas c JOIN viajes v ON c.viaje_id = v.id WHERE c.id = ?').get(finalId);
+
+        // 2. Delete from local SQLite
         const info = db.prepare("DELETE FROM candidaturas WHERE id = ?").run(finalId);
+
+        // 3. Sync deletion to Supabase (if candidate info found)
+        if (candidate && candidate.codigo) {
+            console.log(`   🗑️ Syncing deletion to Supabase... Trip: ${candidate.codigo}, City: ${candidate.ciudad}`);
+            supabaseServer
+                .from('candidates')
+                .delete()
+                .match({ trip_code: candidate.codigo, city_name: candidate.ciudad })
+                .then(({ error }) => {
+                    if (error) console.error('   ❌ Supabase delete failed:', error.message);
+                    else console.log('   ✅ Synced deletion to Supabase');
+                });
+        }
+
         res.json({ success: true, changes: info.changes });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
 });
 
-// --- RESETEAR VOTOS PARA NUEVA RONDA (mantener ciudades eliminadas) ---
-app.post('/api/voting/reset-votes', (req, res) => {
-    const { viajeId } = req.body;
-    console.log('🔄 [RESET VOTOS] Limpiando votos para nueva ronda. ViajeId:', viajeId);
-
-    try {
-        // Eliminamos SOLO los votos, no las candidaturas eliminadas
-        db.prepare('DELETE FROM votos_realizados WHERE viaje_id = ?').run(viajeId);
-        db.prepare('DELETE FROM votos_detalle WHERE viaje_id = ?').run(viajeId);
-
-        // Reseteamos los contadores de puntos y votos de todas las candidaturas restantes
-        db.prepare(`
-            UPDATE candidaturas 
-            SET puntos = 0, votos_pos1 = 0, votos_pos2 = 0, votos_pos3 = 0 
-            WHERE viaje_id = ?
-        `).run(viajeId);
-
-        console.log('   ✅ Votos limpiados, listo para nueva ronda');
-        res.json({ success: true });
-    } catch (e) {
-        console.error('   ❌ Error al resetear votos:', e);
-        res.status(500).json({ error: 'Error al resetear votos' });
-    }
-});
+// DELETED DUPLICATE ROUTE: reset-votes
 
 app.post('/api/voting/cerrar', (req, res) => {
     const { viajeId } = req.body;
@@ -793,6 +1116,37 @@ app.post('/api/voting/cerrar', (req, res) => {
             res.status(404).json({ error: "No hay candidaturas para cerrar" });
         }
     } catch (e) { res.status(500).json({ error: 'Error' }); }
+});
+
+// --- MANEJO DE FECHA DE INICIO DE VOTACIÓN ---
+app.post('/api/viaje/fijar-fechas', async (req, res) => {
+    const { viajeId, votingStartDate } = req.body;
+    console.log(`📅 [FIJAR FECHA] ViajeId: ${viajeId}, Fecha: ${votingStartDate}`);
+
+    try {
+        // 1. Update LOCAL SQLite
+        db.prepare('UPDATE viajes SET voting_start_date = ? WHERE id = ?').run(votingStartDate, viajeId);
+
+        // 2. Get trip code for Supabase Sync
+        const viaje = db.prepare('SELECT codigo FROM viajes WHERE id = ?').get(viajeId);
+
+        if (viaje && viaje.codigo) {
+            console.log(`   🔄 Syncing DATE to Supabase... Trip: ${viaje.codigo}`);
+            // 3. Sync to Supabase TRIPS table
+            const { error } = await supabaseServer
+                .from('trips')
+                .update({ voting_start_date: votingStartDate })
+                .eq('code', viaje.codigo);
+
+            if (error) console.error('   ❌ Supabase sync failed:', error.message);
+            else console.log('   ✅ Synced date to Supabase');
+        }
+
+        res.json({ success: true });
+    } catch (e) {
+        console.error('   ❌ Error setting date:', e);
+        res.status(500).json({ error: 'Error setting date' });
+    }
 });
 
 // --- ENDPOINTS DE ESTADO DE VOTACIÓN ---
@@ -1276,6 +1630,11 @@ app.post('/api/voting/calcular-eliminaciones', (req, res) => {
     console.log(`\n🔥 [ELIMINAR] Calculando para viaje: ${viajeId}`);
 
     try {
+        // DIAGNÓSTICO PROFUNDO
+        const totalTotal = db.prepare('SELECT COUNT(*) as c FROM candidaturas WHERE viaje_id = ?').get(viajeId).c;
+        const totalEliminadas = db.prepare('SELECT COUNT(*) as c FROM candidaturas WHERE viaje_id = ? AND eliminada = 1').get(viajeId).c;
+        console.log(`🔎 DIAGNOSTICO DB: Total ciudades: ${totalTotal}, Eliminadas: ${totalEliminadas}`);
+
         // Get all active candidates sorted by points (already calculated from votes)
         const cands = db.prepare(`
             SELECT id, ciudad, puntos, votos_pos1
@@ -1284,7 +1643,7 @@ app.post('/api/voting/calcular-eliminaciones', (req, res) => {
             ORDER BY puntos DESC, votos_pos1 DESC, id ASC
         `).all(viajeId);
 
-        console.log(`📋 Active cities: ${cands.length}`);
+        console.log(`📋 Active cities query returned: ${cands.length}`);
         cands.forEach((c, i) => {
             console.log(`   ${i + 1}. ${c.ciudad} - ${c.puntos} points`);
         });
@@ -1298,9 +1657,20 @@ app.post('/api/voting/calcular-eliminaciones', (req, res) => {
         } else if (total > 3) {
             toElim = 1;  // Single elimination between 8 and 3
         } else {
+
             // Final phase - declare winner (highest points)
             const winner = cands[0];
-            console.log(`🏆 WINNER: ${winner.ciudad}`);
+
+            if (!winner) {
+                console.error('❌ CRITICAL: No active candidates found for winner decl.');
+                return res.status(500).json({ error: "No quedan candidatos activos para elegir ganador." });
+            }
+
+            console.log(`🏆 WINNER: ${winner.ciudad} - Saving to DB...`);
+
+            // 🔥 CRITICAL FIX: Save winner to DB so everyone sees it
+            db.prepare('UPDATE viajes SET destino = ? WHERE id = ?').run(winner.ciudad, viajeId);
+
             return res.json({
                 success: true,
                 phase: 'FINAL',
