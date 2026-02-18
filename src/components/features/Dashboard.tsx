@@ -239,7 +239,7 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
     );
 
     // --- EFECTOS (Hooks) ---
-    // --- EFECTOS (Hooks) ---
+
     useEffect(() => {
         // 🔥 CAMBIO CRÍTICO: Usamos sessionStorage en lugar de localStorage
         // Estó permite abrir múltiples pestañas/ventanas con usuarios distintos en el mismo navegador
@@ -783,6 +783,24 @@ export const Dashboard = ({ currentCity, onCityClick, onParticipantsClick }: any
         const isTimeUp = hasDate && now >= new Date(votingStartDate);
         // 🔥 FIX: Solo mostrar votación si HAY FECHA y (se acabó el tiempo O está abierta explícitamente)
         const shouldShowVoting = hasDate && (isTimeUp || isVotingOpen);
+
+        // 🔥 FIX: Si ya tenemos ganador (via DB sync), MOSTRAR PANTALLA DE VICTORIA
+        if (winnerData) {
+            return (
+                <div className="fixed inset-0 z-[200] bg-[#F8F5F2] flex flex-col">
+                    <div className="flex-1 overflow-y-auto p-6 pb-32">
+                        <EliminationScreen
+                            candidaturas={candidaturas}
+                            onVote={handleAdminEliminationVote}
+                            phase="final"
+                            viajeId={user.viajeId}
+                            esAdmin={!!user.esAdmin}
+                            forcedResults={{ eliminatedIds: [], survivorsCount: 1, winner: { ciudad: winnerData } }}
+                        />
+                    </div>
+                </div>
+            );
+        }
 
         // 🔥 SYNC: Si hay resultados revelados, MOSTRAR PANTALLA A TODOS (Admin + Guests)
         // Esto corrige el bug donde el Admin veía una ronda "adelantada" con cálculo erróneo.

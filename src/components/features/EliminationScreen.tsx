@@ -7,7 +7,7 @@ interface EliminationScreenProps {
     phase: string;
     viajeId: number;
     esAdmin?: boolean;
-    forcedResults?: { eliminatedIds: string[], survivorsCount: number } | null;
+    forcedResults?: { eliminatedIds: string[], survivorsCount: number, winner?: any } | null;
     onGuestDismiss?: () => void;
 }
 
@@ -15,7 +15,7 @@ export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidatur
     const [step, setStep] = useState<'calculating' | 'result'>('calculating');
     const [eliminatedCities, setEliminatedCities] = useState<any[]>([]);
     const [survivors, setSurvivors] = useState<any[]>([]);
-    const [winner, setWinner] = useState<any>(null);
+    const [winner, setWinner] = useState<any>(forcedResults?.winner || null); // Initialize winner from forcedResults if available
 
     // --- LÓGICA DIVIDIDA: ADMIN CALCULA, GUEST OBSERVA ---
 
@@ -25,7 +25,14 @@ export const EliminationScreen: React.FC<EliminationScreenProps> = ({ candidatur
     useEffect(() => {
         // 🔥 SI HAY RESULTADOS FORZADOS (Invitado Sync), USARLOS DIRECTAMENTE
         if (forcedResults) {
-            console.log('⚡ SYNC: Usando resultados forzados en EliminationScreen');
+            console.log('⚡ SYNC: Usando resultados forzados en EliminationScreen', forcedResults);
+
+            if (forcedResults.winner) {
+                console.log('🏆 SYNC: Ganador recibido en forzado:', forcedResults.winner);
+                setWinner(forcedResults.winner);
+                return;
+            }
+
             const elim = candidaturas.filter(c => forcedResults.eliminatedIds.includes(c.id.toString()) || forcedResults.eliminatedIds.includes(c.id));
             const surv = candidaturas.filter(c => !forcedResults.eliminatedIds.includes(c.id.toString()) && !forcedResults.eliminatedIds.includes(c.id));
 

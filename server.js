@@ -6,7 +6,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
 
 console.log("\n╔══════════════════════════════════════════════════╗");
-console.log("║       INICIANDO SERVIDOR TRAVELSPHERE 2.0        ║");
+console.log("║       INICIANDO SERVIDOR TRAVELSPHERE 2.0 - DEBUG MODE   ║");
 console.log("╠══════════════════════════════════════════════════╣");
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
@@ -25,6 +25,7 @@ import cors from 'cors';
 import axios from 'axios';
 import Database from 'better-sqlite3';
 import { createClient } from '@supabase/supabase-js';
+import fs from 'fs';
 
 const PORT = 3005;
 const GOOGLE_API_KEY = 'AIzaSyDS3VslypLLj3ztowsvykxRUIcUrah7BZg';
@@ -61,7 +62,8 @@ db.exec(`
     voting_start_date TEXT,
     voting_phase TEXT DEFAULT 'PLANNING',
     current_round INTEGER DEFAULT 1,
-    total_cities_initial INTEGER DEFAULT 0
+    total_cities_initial INTEGER DEFAULT 0,
+    last_elimination_data TEXT
   );
   
   CREATE TABLE IF NOT EXISTS usuarios (
@@ -109,7 +111,27 @@ db.exec(`
   );
 `);
 
+// --- MIGRACIÓN AUTOMÁTICA ---
+try {
+    // Intentamos añadir la columna. Si ya existe, SQLite lanzará error y lo ignoramos.
+    db.prepare("ALTER TABLE viajes ADD COLUMN last_elimination_data TEXT").run();
+    console.log("   🛠️  Columna 'last_elimination_data' añadida a tabla viajes.");
+} catch (e) {
+    // Si falla, asumimos que ya existe.
+}
+
+// --- FIX: Asegurar que 'eliminada' no sea NULL ---
+try {
+    const info = db.prepare("UPDATE candidaturas SET eliminada = 0 WHERE eliminada IS NULL").run();
+    if (info.changes > 0) {
+        console.log(`   🛠️  Corregidos ${info.changes} registros con eliminada=NULL a 0.`);
+    }
+} catch (e) {
+    console.error("   ⚠️  Error al corregir eliminada=NULL:", e.message);
+}
+
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
@@ -578,36 +600,21 @@ app.post('/api/voting/enviar-ranking', async (req, res) => {
                 return res.json({ success: true, status: 'already_calculating' });
             }
 
-            console.log('🚀 [TRIGGER] ¡Último voto recibido! Iniciando protocolo de eliminación...');
+            console.log('🚀 [TRIGGER] ¡Último voto recibido! Cambiando a fase de CÁLCULO...');
 
-            // 🔒 BLOQUEO INMEDIATO: Ponemos fase CALCULATING para que nadie más entre
+            // 🔒 BLOQUEO INMEDIATO: Ponemos fase CALCULATING
+            // NO ejecutamos la eliminación aquí. Dejamos que el Admin (o el primer cliente que pregunte)
+            // dispare el cálculo en /api/voting/calcular-eliminaciones, que ahora es IDEMPOTENTE.
             db.prepare("UPDATE viajes SET voting_phase = 'CALCULATING' WHERE id = ?").run(viajeId);
 
-            // Ejecutamos la lógica (dentro de un try-catch para liberar el bloqueo si falla)
-            try {
-                const result = runEliminationRound(viajeId);
-
-                // Actualizamos fase a ELIMINATION (o FINAL)
-                const nuevaFase = result.phase === 'FINAL' ? 'FINAL' : 'ELIMINATION';
-                db.prepare("UPDATE viajes SET voting_phase = ? WHERE id = ?").run(nuevaFase, viajeId);
-
-                // 📢 BROADCAST ÚNICO Y SINCRONIZADO
-                notifyClients({
-                    type: 'elimination_reveal',
-                    data: {
-                        eliminatedIds: result.eliminated.map(e => e.id),
-                        survivorsCount: result.survivors,
-                        winner: result.winner || null,
-                        phase: nuevaFase
-                    }
-                });
-                console.log('💀 [BROADCAST] Resultados enviados a TODOS los clientes.');
-
-            } catch (calcError) {
-                console.error('❌ Error en auto-cálculo:', calcError);
-                // Si falla, volvemos a fase VOTING para intentar arreglarlo
-                db.prepare("UPDATE viajes SET voting_phase = 'VOTING' WHERE id = ?").run(viajeId);
-            }
+            // Notificamos a todos para que sus clientes sepan que estamos calculando
+            notifyClients({
+                type: 'trip_update',
+                data: {
+                    voting_phase: 'CALCULATING',
+                    force_refresh: true
+                }
+            });
         }
 
         res.json({ success: true });
@@ -645,7 +652,21 @@ app.get('/api/viaje/estado', (req, res) => {
 
 // --- LÓGICA CORE DE ELIMINACIÓN (Reutilizable) ---
 function runEliminationRound(viajeId) {
-    const candidaturas = db.prepare('SELECT * FROM candidaturas WHERE viaje_id = ? AND eliminada = 0').all(viajeId);
+    // 1. Verificar si ya tenemos datos de eliminación persistidos (IDEMPOTENCIA)
+    const viaje = db.prepare('SELECT last_elimination_data, voting_phase FROM viajes WHERE id = ?').get(viajeId);
+
+
+    // Si ya estamos en ELIMINATION o FINAL, devolvemos lo guardado para evitar "re-matar" gente
+    if ((viaje.voting_phase === 'ELIMINATION' || viaje.voting_phase === 'FINAL') && viaje.last_elimination_data) {
+        console.log('   🛡️  [IDEMPOTENCIA] Recuperando datos de eliminación previos.');
+        try {
+            return JSON.parse(viaje.last_elimination_data);
+        } catch (e) {
+            console.error('   ❌ Error al parsear last_elimination_data, recalculando...');
+        }
+    }
+
+    const candidaturas = db.prepare('SELECT * FROM candidaturas WHERE viaje_id = ? AND (eliminada = 0 OR eliminada IS NULL)').all(viajeId);
     const totalCities = candidaturas.length;
     const votosRaw = db.prepare('SELECT * FROM votos_detalle WHERE viaje_id = ?').all(viajeId);
 
@@ -718,94 +739,51 @@ function runEliminationRound(viajeId) {
         });
     }
 
-    return { success: true, phase, eliminated, winner, eliminateCount, survivors: totalCities - eliminateCount };
+    const result = { success: true, phase, eliminated, winner, eliminateCount, survivors: totalCities - eliminateCount, timestamp: Date.now() };
+
+    // 🔥 PERSISTENCIA: Guardamos el resultado en la BD para que sobreviva a refrescos
+    db.prepare('UPDATE viajes SET last_elimination_data = ?, voting_phase = ? WHERE id = ?')
+        .run(JSON.stringify(result), phase, viajeId);
+
+    return result;
 }
 
 // --- CÁLCULO DE ELIMINACIONES (Algoritmo Completo) ---
+// --- CÁLCULO DE ELIMINACIONES (Endpoint Admin) ---
+// --- CÁLCULO DE ELIMINACIONES (Endpoint Admin - AHORA IDEMPOTENTE Y BROADCASTER) ---
 app.post('/api/voting/calcular-eliminaciones', (req, res) => {
     const { viajeId } = req.body;
     console.log(`🧮 [CÁLCULO] Solicitado para Viaje: ${viajeId}`);
 
     try {
-        const candidaturas = db.prepare('SELECT * FROM candidaturas WHERE viaje_id = ? AND eliminada = 0').all(viajeId);
-        const totalCities = candidaturas.length;
-        const votosRaw = db.prepare('SELECT * FROM votos_detalle WHERE viaje_id = ?').all(viajeId);
+        // Esta función ahora es inteligente: si ya se calculó, devuelve lo guardado.
+        // Si no, calcula, guarda y devuelve.
+        const result = runEliminationRound(viajeId);
 
-        // Agrupar votos
-        const votesByUser = {};
-        votosRaw.forEach(v => {
-            if (!votesByUser[v.usuario_id]) votesByUser[v.usuario_id] = { rankedCityIds: [] };
-            votesByUser[v.usuario_id].rankedCityIds[v.posicion] = v.candidatura_id.toString();
-        });
-        const votes = Object.values(votesByUser).map(u => ({ rankedCityIds: u.rankedCityIds.filter(id => id) }));
+        // Formateamos para el frontend
+        const responseData = {
+            success: true,
+            phase: result.phase,
+            eliminated: result.eliminated.map(c => ({ id: c.id, ciudad: c.ciudad, puntos: c.puntos })),
+            remaining: result.survivors,
+            winner: result.winner
+        };
 
-        // LÓGICA DE REGLAS (Replica src/utils/votingAlgorithm.ts)
-        let eliminateCount = 1;
-        let phase = 'ELIMINATION';
-        // Ensure integer
-        const count = parseInt(totalCities, 10);
-
-        console.log(`   📊 LOGIC CHECK: Active Candidates: ${candidaturas.map(c => c.ciudad).join(', ')}`);
-
-        if (count <= 3) {
-            phase = 'FINAL';
-            eliminateCount = 0;
-        } else if (count > 8) {
-            const excess = count - 8;
-            console.log(`   📊 Excess calc: ${count} - 8 = ${excess}`);
-            eliminateCount = Math.max(1, Math.min(3, excess));
-            console.log(`   📊 Eliminate count: Math.min(3, ${excess}) = ${eliminateCount}`);
-        }
-
-
-
-        console.log(`   📊 Total: ${count}, Eliminate: ${eliminateCount}`);
-
-        // PUNTUACIÓN (Borda + Desempates de "Voto Olímpico")
-        const scores = {};
-        candidaturas.forEach(c => scores[c.id] = {
-            id: c.id,
-            points: 0,
-            ciudad: c.ciudad,
-            votes1: 0,
-            votes2: 0,
-            votes3: 0
+        // 🔥 BROADCAST OBLIGATORIO:
+        // El Admin llama a esto, pero los Guests necesitan ver el resultado.
+        // Al hacerlo aquí, aseguramos que TODOS ven lo mismo al mismo tiempo.
+        notifyClients({
+            type: 'elimination_reveal',
+            data: {
+                eliminatedIds: result.eliminated.map(e => e.id),
+                survivorsCount: result.survivors,
+                winner: result.winner || null,
+                phase: result.phase
+            }
         });
 
-        votes.forEach(vote => {
-            vote.rankedCityIds.forEach((cityId, index) => {
-                if (scores[cityId]) {
-                    scores[cityId].points += (totalCities - index);
-                    if (index === 0) scores[cityId].votes1++;
-                    if (index === 1) scores[cityId].votes2++;
-                    if (index === 2) scores[cityId].votes3++;
-                }
-            });
-        });
-
-        // Ordenar: Descendente (Mayor Puntuación/Mayor Importancia = Arriba)
-        const sorted = Object.values(scores).sort((a, b) => {
-            if (b.points !== a.points) return b.points - a.points;
-            if (b.votes1 !== a.votes1) return b.votes1 - a.votes1;
-            if (b.votes2 !== a.votes2) return b.votes2 - a.votes2;
-            if (b.votes3 !== a.votes3) return b.votes3 - a.votes3;
-            return Math.random() - 0.5;
-        });
-
-        // RESULTADO
-        let resultData = {};
-        if (phase === 'FINAL') {
-            // En Final, gana el MENOS odiado (último de la lista sorted desc)
-            // O si cambiamos a 'Favorito', gana el primero. 
-            // Mantenemos lógica de 'Superviviente' = Menos puntos de odio
-            resultData = { winner: sorted[sorted.length - 1], phase: 'FINAL' };
-        } else {
-            const eliminated = sorted.slice(0, eliminateCount);
-            resultData = { eliminated, phase: 'ELIMINATION' };
-        }
-
-        console.log('   ✅ Calculated:', JSON.stringify(resultData));
-        res.json({ success: true, ...resultData });
+        console.log('   ✅ Calculated & Broadcasted:', JSON.stringify(responseData));
+        res.json(responseData);
 
     } catch (e) {
         console.error('   ❌ Error calculating:', e);
@@ -1625,85 +1603,7 @@ app.post('/api/viaje/fijar-fechas', async (req, res) => {
         res.status(500).json({ success: false, error: e.message });
     }
 });
-app.post('/api/voting/calcular-eliminaciones', (req, res) => {
-    const { viajeId } = req.body;
-    console.log(`\n🔥 [ELIMINAR] Calculando para viaje: ${viajeId}`);
-
-    try {
-        // DIAGNÓSTICO PROFUNDO
-        const totalTotal = db.prepare('SELECT COUNT(*) as c FROM candidaturas WHERE viaje_id = ?').get(viajeId).c;
-        const totalEliminadas = db.prepare('SELECT COUNT(*) as c FROM candidaturas WHERE viaje_id = ? AND eliminada = 1').get(viajeId).c;
-        console.log(`🔎 DIAGNOSTICO DB: Total ciudades: ${totalTotal}, Eliminadas: ${totalEliminadas}`);
-
-        // Get all active candidates sorted by points (already calculated from votes)
-        const cands = db.prepare(`
-            SELECT id, ciudad, puntos, votos_pos1
-            FROM candidaturas
-            WHERE viaje_id = ? AND (eliminada IS NULL OR eliminada = 0)
-            ORDER BY puntos DESC, votos_pos1 DESC, id ASC
-        `).all(viajeId);
-
-        console.log(`📋 Active cities query returned: ${cands.length}`);
-        cands.forEach((c, i) => {
-            console.log(`   ${i + 1}. ${c.ciudad} - ${c.puntos} points`);
-        });
-
-        const total = cands.length;
-        let toElim = 0;
-
-        // Determine how many to eliminate based on current count
-        if (total > 8) {
-            toElim = Math.min(3, total - 8);  // Batch elimination to reach 8
-        } else if (total > 3) {
-            toElim = 1;  // Single elimination between 8 and 3
-        } else {
-
-            // Final phase - declare winner (highest points)
-            const winner = cands[0];
-
-            if (!winner) {
-                console.error('❌ CRITICAL: No active candidates found for winner decl.');
-                return res.status(500).json({ error: "No quedan candidatos activos para elegir ganador." });
-            }
-
-            console.log(`🏆 WINNER: ${winner.ciudad} - Saving to DB...`);
-
-            // 🔥 CRITICAL FIX: Save winner to DB so everyone sees it
-            db.prepare('UPDATE viajes SET destino = ? WHERE id = ?').run(winner.ciudad, viajeId);
-
-            return res.json({
-                success: true,
-                phase: 'FINAL',
-                winner: winner,
-                eliminated: []
-            });
-        }
-
-        // Top N candidates (highest points) are eliminated (negative voting)
-        const elims = cands.slice(0, toElim);
-        console.log(`\n❌ Eliminating: ${elims.map(c => c.ciudad).join(', ')}`);
-
-        // Mark as eliminated in database
-        db.transaction(() => {
-            elims.forEach(c => {
-                db.prepare('UPDATE candidaturas SET eliminada = 1 WHERE id = ?').run(c.id);
-            });
-        })();
-
-        console.log(`✅ Database updated. ${total - toElim} cities remaining\n`);
-
-        res.json({
-            success: true,
-            phase: total > 8 ? 'BARRIDO' : 'SUPERVIVENCIA',
-            eliminated: elims.map(c => ({ id: c.id, ciudad: c.ciudad, puntos: c.puntos })),
-            remaining: total - toElim
-        });
-
-    } catch (e) {
-        console.error('❌ Error:', e.message);
-        res.status(500).json({ error: e.message });
-    }
-});
+// (Duplicate endpoint removed)
 
 
 app.listen(PORT, () => { console.log(`\n✈️ SERVIDOR LISTO EN PUERTO ${PORT}`); });
